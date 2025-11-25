@@ -1,0 +1,64 @@
+---
+$context: https://business.org.ai
+$id: https://business.org.ai/Business
+$type: https://schema.org.ai/Noun
+subClassOf: https://schema.org.ai/Organization
+---
+
+
+# Business
+
+A business entity such as a company or organization that offers products or services to customers.
+
+## Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| name | string | The name of the business. |
+| description | string | A brief description of the business. |
+| website | URL | The official website of the business. |
+| industry | string | The industry sector the business operates in. |
+| foundedDate | date | The date the business was founded. |
+| employees | integer | The number of employees in the business. |
+| headquarters | string | The location of the business's headquarters. |
+| revenue | number | The annual revenue of the business. |
+| logo | URL | The logo image of the business. |
+
+## Relationships
+
+| Relationship | Target Type | Description |
+|--------------|-------------|-------------|
+| hasProduct | Product | Products offered by the business. |
+| hasService | Service | Services provided by the business. |
+| hasBrand | Brand | Brands owned by the business. |
+| hasSubsidiary | Business | Subsidiary companies owned by the business. |
+| hasPartner | Business | Partner businesses associated with the business. |
+
+
+## Searches
+
+| Search | Parameters | Description |
+|--------|------------|-------------|
+| OKRs | business: Business | Search for OKRs associated with the business. |
+
+
+## Actions
+
+| Action | Object | Result | Description |
+|--------|------------|-------------|
+| launchProduct | Product | Event | Launch a new product. |
+| offerService | Service | Event | Offer a new service. |
+| rebrand | Brand | Event | Rebrand the business or a brand. |
+| expandToMarket | string | Event | Expand business operations to a new market. |
+| hireEmployee | Person | Event | Hire a new employee for the business. |
+
+
+## Events
+
+| Event | Description |
+|-------|-------------|
+| productLaunched | A new product has been launched by the business. |
+| serviceOffered | A new service has been offered by the business. |
+| businessRebranded | The business or a brand has been rebranded. |
+| marketExpanded | The business has expanded operations to a new market. |
+| employeeHired | A new employee has been hired by the business. |
