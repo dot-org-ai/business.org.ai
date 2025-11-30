@@ -4,11 +4,21 @@
  * Business.org.ai Data Generation Script (Standalone)
  *
  * Generates business-related data files from local .source/ folder with:
+ * - Fully qualified https:// URLs
  * - canonical column mapping business.org.ai URLs to their canonical domains
  * - relationships in .data/relationships/ folder by from/to type
  *
  * This script is standalone and does not depend on the parent repo.
- * All source data should be in .source/[Standard]/[Type].tsv
+ * Source data structure:
+ *   .source/[Standard]/[Type].tsv
+ *   .source/[Standard]/relationships/[Name].tsv
+ *
+ * Standard hierarchies:
+ *   NAICS: Sectors, Subsectors, IndustryGroups, Industries, NationalIndustries
+ *   APQC: Categories, ProcessGroups, Processes, Activities
+ *   UNSPSC: Segments, Families, Classes, Commodities
+ *   NAPCS: Sections, Subsections, Groups, Classes, Subclasses
+ *   ONET: Occupations, Skills, Knowledge, Abilities, Tasks, WorkActivities
  */
 
 import fs from 'fs'
@@ -22,29 +32,6 @@ const __dirname = path.dirname(__filename)
 const SOURCE_DIR = path.resolve(__dirname, '../.source')
 const OUTPUT_DATA_DIR = path.resolve(__dirname, '../.data')
 const OUTPUT_REL_DIR = path.resolve(__dirname, '../.data/relationships')
-
-// Canonical domain mappings for sources we own
-const CANONICAL_DOMAINS: Record<string, string> = {
-  ONET: 'onet.org.ai',
-  NAICS: 'naics.org.ai',
-  GS1: 'gs1.org.ai',
-  APQC: 'apqc.org.ai',
-}
-
-// Business.org.ai canonical mappings
-const BUSINESS_CANONICAL: Record<string, string> = {
-  Industries: 'industries.org.ai',
-  Occupations: 'occupations.org.ai',
-  Skills: 'skills.org.ai',
-  Knowledge: 'knowledge.org.ai',
-  Abilities: 'abilities.org.ai',
-  Tasks: 'tasks.org.ai',
-  Actions: 'actions.org.ai',
-  Events: 'events.org.ai',
-  Processes: 'process.org.ai',
-  Products: 'products.org.ai',
-  Services: 'services.org.ai',
-}
 
 // Ensure directories exist
 ;[OUTPUT_DATA_DIR, OUTPUT_REL_DIR].forEach(dir => {
@@ -70,7 +57,6 @@ interface EntityRow {
 }
 
 interface RelationshipRow {
-  ns: string
   from: string
   to: string
   predicate: string
@@ -116,30 +102,6 @@ function writeTSV(filePath: string, data: Record<string, string>[]): void {
 }
 
 /**
- * Transform source URL to business.org.ai URL with canonical
- */
-function transformEntity(
-  row: Record<string, string>,
-  businessType: string,
-  canonicalDomain: string
-): EntityRow {
-  const id = row.id || row.url?.split('/').pop() || ''
-  const canonical = `${canonicalDomain}/${id}`
-  const businessUrl = `business.org.ai/${businessType}/${id}`
-
-  return {
-    url: businessUrl,
-    canonical,
-    ns: 'business.org.ai',
-    type: row.type || businessType.replace(/s$/, ''), // Remove plural for type
-    id,
-    code: row.code || '',
-    name: row.name || '',
-    description: row.description || '',
-  }
-}
-
-/**
  * Normalize kebab-case ID to PascalCase
  */
 function normalizeToPascalCase(id: string): string {
@@ -150,80 +112,257 @@ function normalizeToPascalCase(id: string): string {
 }
 
 /**
- * Transform relationship with normalized IDs
+ * Convert text to Wikipedia_style ID
  */
-function transformRelationship(
-  row: Record<string, string>,
-  fromType: string,
-  toType: string
-): RelationshipRow {
-  return {
-    ns: 'business.org.ai',
-    from: normalizeToPascalCase(row.from || ''),
-    to: normalizeToPascalCase(row.to || ''),
-    predicate: row.predicate || '',
-    reverse: row.reverse || '',
-  }
+function toWikipediaStyle(text: string): string {
+  return text
+    .replace(/[^\w\s]/g, '') // Remove special chars
+    .split(/\s+/)
+    .filter(w => w.length > 0)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join('_')
 }
 
 // ============================================================================
-// Entity Generation Functions
+// NAICS Industry Hierarchy Generation
 // ============================================================================
 
-function generateIndustries(): void {
-  console.log('\n📦 Generating Industries...')
+function generateIndustryHierarchy(): void {
+  console.log('\n📊 Generating Industry Hierarchy...')
 
-  const sourceFile = path.join(SOURCE_DIR, 'NAICS', 'Industries.tsv')
-  const sourceData = parseTSV(sourceFile)
+  // Read all NAICS hierarchy levels
+  const naicsTypes = ['Sectors', 'Subsectors', 'IndustryGroups', 'Industries', 'NationalIndustries']
 
-  // Transform to business.org.ai format
-  const entities = sourceData.map(row => ({
-    url: `business.org.ai/Industries/${row.id}`,
-    canonical: `industries.org.ai/${row.id}`,
-    ns: 'business.org.ai',
-    type: 'Industry',
-    id: row.id,
-    code: row.code || '',
-    name: row.name || '',
-    description: row.description || '',
-  }))
+  for (const naicsType of naicsTypes) {
+    const sourceFile = path.join(SOURCE_DIR, 'NAICS', `${naicsType}.tsv`)
+    if (!fs.existsSync(sourceFile)) continue
 
-  // Dedupe by ID (keep first occurrence)
-  const seen = new Set<string>()
-  const deduped = entities.filter(e => {
-    if (seen.has(e.id)) return false
-    seen.add(e.id)
-    return true
-  })
+    const sourceData = parseTSV(sourceFile)
+    const singularType = naicsType.replace(/s$/, '').replace(/ie$/, 'y')
 
-  writeTSV(path.join(OUTPUT_DATA_DIR, 'Industries.tsv'), deduped)
-}
+    const entities = sourceData.map(row => ({
+      url: `https://business.org.ai/${naicsType}/${row.id}`,
+      canonical: `https://industries.org.ai/${naicsType}/${row.id}`,
+      ns: 'business.org.ai',
+      type: singularType,
+      id: row.id || '',
+      code: row.code || '',
+      name: row.name || '',
+      description: row.description || '',
+    }))
 
-function generateIndustryRelationships(): void {
-  console.log('\n🔗 Generating Industry relationships...')
+    // Dedupe by ID
+    const seen = new Set<string>()
+    const deduped = entities.filter(e => {
+      if (!e.id || seen.has(e.id)) return false
+      seen.add(e.id)
+      return true
+    })
 
-  const sourceFile = path.join(SOURCE_DIR, 'NAICS', 'Industries.Relationships.tsv')
-  const sourceData = parseTSV(sourceFile)
-
-  // Group by predicate to determine to-type
-  const industryToIndustry: RelationshipRow[] = []
-
-  sourceData.forEach(row => {
-    if (row.predicate === 'hasSubIndustry') {
-      industryToIndustry.push({
-        ns: 'business.org.ai',
-        from: row.from,
-        to: row.to,
-        predicate: row.predicate,
-        reverse: row.reverse || 'partOfIndustry',
-      })
+    if (deduped.length > 0) {
+      writeTSV(path.join(OUTPUT_DATA_DIR, `${naicsType}.tsv`), deduped)
     }
-  })
+  }
 
-  if (industryToIndustry.length > 0) {
-    writeTSV(path.join(OUTPUT_REL_DIR, 'Industries.Industries.tsv'), industryToIndustry)
+  // Generate hierarchy relationships
+  const relFile = path.join(SOURCE_DIR, 'NAICS', 'relationships', 'Hierarchy.tsv')
+  if (fs.existsSync(relFile)) {
+    const relData = parseTSV(relFile)
+    const relationships = relData.map(row => ({
+      from: row.from || '',
+      to: row.to || '',
+      predicate: row.predicate || 'hasSubIndustry',
+      reverse: row.reverse || 'partOfIndustry',
+    }))
+
+    if (relationships.length > 0) {
+      writeTSV(path.join(OUTPUT_REL_DIR, 'Industries.Hierarchy.tsv'), relationships)
+    }
   }
 }
+
+// ============================================================================
+// APQC Process Hierarchy Generation
+// ============================================================================
+
+function generateProcessHierarchy(): void {
+  console.log('\n⚙️ Generating Process Hierarchy...')
+
+  const apqcTypes = ['Categories', 'ProcessGroups', 'Processes', 'Activities']
+
+  for (const apqcType of apqcTypes) {
+    const sourceFile = path.join(SOURCE_DIR, 'APQC', `${apqcType}.tsv`)
+    if (!fs.existsSync(sourceFile)) continue
+
+    const sourceData = parseTSV(sourceFile)
+    const singularType = apqcType.replace(/ies$/, 'y').replace(/s$/, '')
+
+    const entities = sourceData.map(row => {
+      // Convert to Wikipedia_style ID
+      const wikiId = toWikipediaStyle(row.name || row.id || '')
+
+      return {
+        url: `https://business.org.ai/${apqcType}/${wikiId}`,
+        canonical: `https://process.org.ai/${apqcType}/${wikiId}`,
+        ns: 'business.org.ai',
+        type: singularType,
+        id: wikiId,
+        code: row.code || row.pcfId || '',
+        name: row.name || '',
+        description: row.description || '',
+        industry: row.industry || '',
+      }
+    })
+
+    // Dedupe by ID
+    const seen = new Set<string>()
+    const deduped = entities.filter(e => {
+      if (!e.id || seen.has(e.id)) return false
+      seen.add(e.id)
+      return true
+    })
+
+    if (deduped.length > 0) {
+      writeTSV(path.join(OUTPUT_DATA_DIR, `${apqcType}.tsv`), deduped)
+    }
+  }
+
+  // Generate hierarchy relationships
+  const relFile = path.join(SOURCE_DIR, 'APQC', 'relationships', 'Hierarchy.tsv')
+  if (fs.existsSync(relFile)) {
+    const relData = parseTSV(relFile)
+    const relationships = relData.map(row => ({
+      from: row.from || '',
+      to: row.to || '',
+      predicate: row.predicate || 'hasSubProcess',
+      reverse: row.reverse || 'partOfProcess',
+    }))
+
+    if (relationships.length > 0) {
+      writeTSV(path.join(OUTPUT_REL_DIR, 'Processes.Hierarchy.tsv'), relationships)
+    }
+  }
+}
+
+// ============================================================================
+// UNSPSC Product Hierarchy Generation
+// ============================================================================
+
+function generateProductHierarchy(): void {
+  console.log('\n📦 Generating Product Hierarchy...')
+
+  const unspscTypes = ['Segments', 'Families', 'Classes', 'Commodities']
+
+  for (const unspscType of unspscTypes) {
+    const sourceFile = path.join(SOURCE_DIR, 'UNSPSC', `${unspscType}.tsv`)
+    if (!fs.existsSync(sourceFile)) continue
+
+    const sourceData = parseTSV(sourceFile)
+    const singularType = unspscType.replace(/ies$/, 'y').replace(/s$/, '')
+
+    const entities = sourceData.map(row => ({
+      url: `https://business.org.ai/Products/${unspscType}/${row.id}`,
+      canonical: `https://products.org.ai/${unspscType}/${row.id}`,
+      ns: 'business.org.ai',
+      type: singularType,
+      id: row.id || '',
+      code: row.code || '',
+      name: row.name || '',
+      description: row.description || '',
+      digital: row.digital || '',
+    }))
+
+    // Dedupe by ID
+    const seen = new Set<string>()
+    const deduped = entities.filter(e => {
+      if (!e.id || seen.has(e.id)) return false
+      seen.add(e.id)
+      return true
+    })
+
+    if (deduped.length > 0) {
+      writeTSV(path.join(OUTPUT_DATA_DIR, `Products.${unspscType}.tsv`), deduped)
+    }
+  }
+
+  // Generate hierarchy relationships
+  const relFile = path.join(SOURCE_DIR, 'UNSPSC', 'relationships', 'Hierarchy.tsv')
+  if (fs.existsSync(relFile)) {
+    const relData = parseTSV(relFile)
+    const relationships = relData.map(row => ({
+      from: row.from || '',
+      to: row.to || '',
+      predicate: row.predicate || 'hasSubProduct',
+      reverse: row.reverse || 'partOfProduct',
+    }))
+
+    if (relationships.length > 0) {
+      writeTSV(path.join(OUTPUT_REL_DIR, 'Products.Hierarchy.tsv'), relationships)
+    }
+  }
+}
+
+// ============================================================================
+// NAPCS Service Hierarchy Generation
+// ============================================================================
+
+function generateServiceHierarchy(): void {
+  console.log('\n🛎️ Generating Service Hierarchy...')
+
+  const napcsTypes = ['Sections', 'Subsections', 'Groups', 'Classes', 'Subclasses']
+
+  for (const napcsType of napcsTypes) {
+    const sourceFile = path.join(SOURCE_DIR, 'NAPCS', `${napcsType}.tsv`)
+    if (!fs.existsSync(sourceFile)) continue
+
+    const sourceData = parseTSV(sourceFile)
+    const singularType = napcsType.replace(/es$/, '').replace(/s$/, '')
+
+    const entities = sourceData.map(row => ({
+      url: `https://business.org.ai/Services/${napcsType}/${row.id}`,
+      canonical: `https://services.org.ai/${napcsType}/${row.id}`,
+      ns: 'business.org.ai',
+      type: singularType,
+      id: row.id || '',
+      code: row.code || '',
+      name: row.name || '',
+      description: row.description || '',
+      digital: row.digital || '',
+    }))
+
+    // Dedupe by ID
+    const seen = new Set<string>()
+    const deduped = entities.filter(e => {
+      if (!e.id || seen.has(e.id)) return false
+      seen.add(e.id)
+      return true
+    })
+
+    if (deduped.length > 0) {
+      writeTSV(path.join(OUTPUT_DATA_DIR, `Services.${napcsType}.tsv`), deduped)
+    }
+  }
+
+  // Generate hierarchy relationships
+  const relFile = path.join(SOURCE_DIR, 'NAPCS', 'relationships', 'Hierarchy.tsv')
+  if (fs.existsSync(relFile)) {
+    const relData = parseTSV(relFile)
+    const relationships = relData.map(row => ({
+      from: row.from || '',
+      to: row.to || '',
+      predicate: row.predicate || 'hasSubService',
+      reverse: row.reverse || 'partOfService',
+    }))
+
+    if (relationships.length > 0) {
+      writeTSV(path.join(OUTPUT_REL_DIR, 'Services.Hierarchy.tsv'), relationships)
+    }
+  }
+}
+
+// ============================================================================
+// ONET Occupations and Related Types
+// ============================================================================
 
 function generateOccupations(): void {
   console.log('\n👤 Generating Occupations...')
@@ -232,11 +371,11 @@ function generateOccupations(): void {
   const sourceData = parseTSV(sourceFile)
 
   const entities = sourceData.map(row => ({
-    url: `business.org.ai/Occupations/${row.id}`,
-    canonical: `occupations.org.ai/${row.id}`,
+    url: `https://business.org.ai/Occupations/${row.id}`,
+    canonical: `https://occupations.org.ai/${row.id}`,
     ns: 'business.org.ai',
     type: 'Occupation',
-    id: row.id,
+    id: row.id || '',
     code: row.code || '',
     name: row.name || '',
     description: row.description || '',
@@ -245,7 +384,7 @@ function generateOccupations(): void {
   // Dedupe by ID
   const seen = new Set<string>()
   const deduped = entities.filter(e => {
-    if (seen.has(e.id)) return false
+    if (!e.id || seen.has(e.id)) return false
     seen.add(e.id)
     return true
   })
@@ -260,28 +399,30 @@ function generateONETTypes(): void {
     { source: 'Skills.tsv', output: 'Skills.tsv', type: 'Skill', domain: 'skills.org.ai' },
     { source: 'Knowledge.tsv', output: 'Knowledge.tsv', type: 'Knowledge', domain: 'knowledge.org.ai' },
     { source: 'Abilities.tsv', output: 'Abilities.tsv', type: 'Ability', domain: 'abilities.org.ai' },
+    { source: 'WorkActivities.tsv', output: 'WorkActivities.tsv', type: 'WorkActivity', domain: 'activities.org.ai' },
   ]
 
   for (const t of types) {
     const sourceFile = path.join(SOURCE_DIR, 'ONET', t.source)
+    if (!fs.existsSync(sourceFile)) continue
+
     const sourceData = parseTSV(sourceFile)
 
     const entities = sourceData.map(row => ({
-      url: `business.org.ai/${t.type}s/${row.id}`,
-      canonical: `${t.domain}/${row.id}`,
+      url: `https://business.org.ai/${t.type}s/${row.id}`,
+      canonical: `https://${t.domain}/${row.id}`,
       ns: 'business.org.ai',
       type: t.type,
-      id: row.id,
+      id: row.id || '',
       code: row.code || '',
       name: row.name || '',
       description: row.description || '',
-      digital: row.digital || '',
     }))
 
     // Dedupe by ID
     const seen = new Set<string>()
     const deduped = entities.filter(e => {
-      if (seen.has(e.id)) return false
+      if (!e.id || seen.has(e.id)) return false
       seen.add(e.id)
       return true
     })
@@ -293,14 +434,18 @@ function generateONETTypes(): void {
 function generateONETRelationships(): void {
   console.log('\n🔗 Generating O*NET relationships...')
 
-  const sourceFile = path.join(SOURCE_DIR, 'ONET', 'Occupations.Relationships.tsv')
+  const sourceFile = path.join(SOURCE_DIR, 'ONET', 'relationships', 'Occupations.tsv')
+  if (!fs.existsSync(sourceFile)) {
+    console.warn('  ⚠️  No ONET relationships found')
+    return
+  }
+
   const sourceData = parseTSV(sourceFile)
 
   // Load entity lookups to determine target types
-  const skills = new Set(parseTSV(path.join(SOURCE_DIR, 'ONET', 'Skills.tsv')).map(r => normalizeToPascalCase(r.id)))
-  const knowledge = new Set(parseTSV(path.join(SOURCE_DIR, 'ONET', 'Knowledge.tsv')).map(r => normalizeToPascalCase(r.id)))
-  const abilities = new Set(parseTSV(path.join(SOURCE_DIR, 'ONET', 'Abilities.tsv')).map(r => normalizeToPascalCase(r.id)))
-  const occupations = new Set(parseTSV(path.join(SOURCE_DIR, 'ONET', 'Occupations.tsv')).map(r => r.id))
+  const skills = new Set(parseTSV(path.join(SOURCE_DIR, 'ONET', 'Skills.tsv')).map(r => normalizeToPascalCase(r.id || '')))
+  const knowledge = new Set(parseTSV(path.join(SOURCE_DIR, 'ONET', 'Knowledge.tsv')).map(r => normalizeToPascalCase(r.id || '')))
+  const abilities = new Set(parseTSV(path.join(SOURCE_DIR, 'ONET', 'Abilities.tsv')).map(r => normalizeToPascalCase(r.id || '')))
 
   // Group relationships by to-type
   const occToSkills: RelationshipRow[] = []
@@ -309,19 +454,22 @@ function generateONETRelationships(): void {
   const occToOccupations: RelationshipRow[] = []
 
   sourceData.forEach(row => {
-    const from = normalizeToPascalCase(row.from || '')
-    const to = normalizeToPascalCase(row.to || '')
+    const from = row.from || ''
+    const to = row.to || ''
+    const toNormalized = normalizeToPascalCase(to.split('/').pop() || '')
     const predicate = row.predicate || ''
     const reverse = row.reverse || ''
 
-    if (skills.has(to)) {
-      occToSkills.push({ ns: 'business.org.ai', from, to, predicate, reverse })
-    } else if (knowledge.has(to)) {
-      occToKnowledge.push({ ns: 'business.org.ai', from, to, predicate, reverse })
-    } else if (abilities.has(to)) {
-      occToAbilities.push({ ns: 'business.org.ai', from, to, predicate, reverse })
-    } else if (occupations.has(to) || predicate === 'relatedTo') {
-      occToOccupations.push({ ns: 'business.org.ai', from, to, predicate, reverse })
+    const rel = { from, to, predicate, reverse }
+
+    if (skills.has(toNormalized)) {
+      occToSkills.push(rel)
+    } else if (knowledge.has(toNormalized)) {
+      occToKnowledge.push(rel)
+    } else if (abilities.has(toNormalized)) {
+      occToAbilities.push(rel)
+    } else {
+      occToOccupations.push(rel)
     }
   })
 
@@ -347,7 +495,7 @@ interface VerbData {
   id: string
   event: string // past tense
   activity: string // -ing form
-  object: string // result noun
+  noun: string // result noun
 }
 
 /**
@@ -359,11 +507,12 @@ function loadVerbs(): Map<string, VerbData> {
   const verbMap = new Map<string, VerbData>()
 
   verbs.forEach(v => {
-    verbMap.set(v.id.toLowerCase(), {
-      id: v.id,
-      event: v.event || v.id + 'ed',
-      activity: v.activity || v.id + 'ing',
-      object: v.object || '',
+    const id = v.id || v.verb || ''
+    verbMap.set(id.toLowerCase(), {
+      id,
+      event: v.pastTense || v.event || id + 'ed',
+      activity: v.gerund || v.activity || id + 'ing',
+      noun: v.noun || '',
     })
   })
 
@@ -371,20 +520,7 @@ function loadVerbs(): Map<string, VerbData> {
 }
 
 /**
- * Convert text to Wikipedia_style ID
- */
-function toWikipediaStyle(text: string): string {
-  return text
-    .replace(/[^\w\s]/g, '') // Remove special chars
-    .split(/\s+/)
-    .filter(w => w.length > 0)
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join('_')
-}
-
-/**
  * Parse a GraphDL semantic ID into components
- * e.g., "ChiefExecutives.direct.FinancialActivities.to.FundOperations"
  */
 function parseGraphDLId(id: string): { subject: string; verb: string; object: string; preposition?: string; prepObject?: string } | null {
   const parts = id.split('.')
@@ -430,7 +566,7 @@ function generateTasksActionsEvents(): void {
   // Process each source task
   sourceData.forEach(row => {
     const taskDescription = row.name || row.description || ''
-    const graphdlId = row.id
+    const graphdlId = row.id || ''
     const occupationId = row.occupationTitle?.replace(/\s+/g, '') || ''
     const taskCode = row.taskId || row.code || ''
 
@@ -438,8 +574,8 @@ function generateTasksActionsEvents(): void {
     const wikiTaskId = toWikipediaStyle(taskDescription)
     if (wikiTaskId && !taskMap.has(wikiTaskId)) {
       taskMap.set(wikiTaskId, {
-        url: `business.org.ai/Tasks/${wikiTaskId}`,
-        canonical: `tasks.org.ai/${wikiTaskId}`,
+        url: `https://business.org.ai/Tasks/${wikiTaskId}`,
+        canonical: `https://tasks.org.ai/${wikiTaskId}`,
         ns: 'business.org.ai',
         type: 'Task',
         id: wikiTaskId,
@@ -454,8 +590,8 @@ function generateTasksActionsEvents(): void {
       const occTaskId = `${occupationId}/${wikiTaskId}`
       if (!taskMap.has(occTaskId)) {
         taskMap.set(occTaskId, {
-          url: `business.org.ai/Tasks/${occTaskId}`,
-          canonical: `tasks.org.ai/${occTaskId}`,
+          url: `https://business.org.ai/Tasks/${occTaskId}`,
+          canonical: `https://tasks.org.ai/${occTaskId}`,
           ns: 'business.org.ai',
           type: 'Task',
           id: occTaskId,
@@ -468,9 +604,8 @@ function generateTasksActionsEvents(): void {
 
       // Link occupation to task
       occupationToTask.push({
-        ns: 'business.org.ai',
-        from: occupationId,
-        to: wikiTaskId,
+        from: `https://business.org.ai/Occupations/${occupationId}`,
+        to: `https://business.org.ai/Tasks/${wikiTaskId}`,
         predicate: 'performs',
         reverse: 'performedBy',
       })
@@ -480,8 +615,8 @@ function generateTasksActionsEvents(): void {
     const parsed = parseGraphDLId(graphdlId)
     if (parsed && !actionMap.has(graphdlId)) {
       actionMap.set(graphdlId, {
-        url: `business.org.ai/Actions/${graphdlId}`,
-        canonical: `actions.org.ai/${graphdlId}`,
+        url: `https://business.org.ai/Actions/${graphdlId}`,
+        canonical: `https://actions.org.ai/${graphdlId}`,
         ns: 'business.org.ai',
         type: 'Action',
         id: graphdlId,
@@ -497,9 +632,8 @@ function generateTasksActionsEvents(): void {
       // Link task to action
       if (wikiTaskId) {
         taskToAction.push({
-          ns: 'business.org.ai',
-          from: wikiTaskId,
-          to: graphdlId,
+          from: `https://business.org.ai/Tasks/${wikiTaskId}`,
+          to: `https://business.org.ai/Actions/${graphdlId}`,
           predicate: 'hasAction',
           reverse: 'actionOf',
         })
@@ -508,9 +642,8 @@ function generateTasksActionsEvents(): void {
       // Link occupation to action
       if (occupationId) {
         occupationToAction.push({
-          ns: 'business.org.ai',
-          from: occupationId,
-          to: graphdlId,
+          from: `https://business.org.ai/Occupations/${occupationId}`,
+          to: `https://business.org.ai/Actions/${graphdlId}`,
           predicate: 'performs',
           reverse: 'performedBy',
         })
@@ -520,8 +653,8 @@ function generateTasksActionsEvents(): void {
       const genericActionId = `${parsed.verb}.${parsed.object}${parsed.preposition ? '.' + parsed.preposition + '.' + parsed.prepObject : ''}`
       if (!actionMap.has(genericActionId)) {
         actionMap.set(genericActionId, {
-          url: `business.org.ai/Actions/${genericActionId}`,
-          canonical: `actions.org.ai/${genericActionId}`,
+          url: `https://business.org.ai/Actions/${genericActionId}`,
+          canonical: `https://actions.org.ai/${genericActionId}`,
           ns: 'business.org.ai',
           type: 'Action',
           id: genericActionId,
@@ -542,8 +675,8 @@ function generateTasksActionsEvents(): void {
 
       if (!eventMap.has(eventId)) {
         eventMap.set(eventId, {
-          url: `business.org.ai/Events/${eventId}`,
-          canonical: `events.org.ai/${eventId}`,
+          url: `https://business.org.ai/Events/${eventId}`,
+          canonical: `https://events.org.ai/${eventId}`,
           ns: 'business.org.ai',
           type: 'Event',
           id: eventId,
@@ -557,9 +690,8 @@ function generateTasksActionsEvents(): void {
 
       // Link action to event
       actionToEvent.push({
-        ns: 'business.org.ai',
-        from: graphdlId,
-        to: eventId,
+        from: `https://business.org.ai/Actions/${graphdlId}`,
+        to: `https://business.org.ai/Events/${eventId}`,
         predicate: 'produces',
         reverse: 'producedBy',
       })
@@ -569,8 +701,8 @@ function generateTasksActionsEvents(): void {
         const prepEventId = `${parsed.prepObject}.${pastTense}`
         if (!eventMap.has(prepEventId)) {
           eventMap.set(prepEventId, {
-            url: `business.org.ai/Events/${prepEventId}`,
-            canonical: `events.org.ai/${prepEventId}`,
+            url: `https://business.org.ai/Events/${prepEventId}`,
+            canonical: `https://events.org.ai/${prepEventId}`,
             ns: 'business.org.ai',
             type: 'Event',
             id: prepEventId,
@@ -619,138 +751,6 @@ function generateTasksActionsEvents(): void {
   }
 }
 
-function generateProcesses(): void {
-  console.log('\n⚙️ Generating Processes...')
-
-  const sourceFile = path.join(SOURCE_DIR, 'APQC', 'Processes.tsv')
-  const sourceData = parseTSV(sourceFile)
-
-  // Transform to Wikipedia_style IDs
-  const entities = sourceData.map(row => {
-    // Convert name to Wikipedia_style: "Develop Vision and Strategy" -> "Develop_Vision_And_Strategy"
-    const wikiId = (row.name || row.id)
-      .replace(/[^\w\s]/g, '') // Remove special chars
-      .split(/\s+/)
-      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-      .join('_')
-
-    return {
-      url: `business.org.ai/Processes/${wikiId}`,
-      canonical: `process.org.ai/${wikiId}`,
-      ns: 'business.org.ai',
-      type: 'Process',
-      id: wikiId,
-      code: row.code || row.pcfId || '',
-      name: row.name || '',
-      description: row.description || '',
-      hierarchyId: row.hierarchyId || '',
-      industry: row.industry || '',
-    }
-  })
-
-  // Dedupe by ID
-  const seen = new Set<string>()
-  const deduped = entities.filter(e => {
-    if (seen.has(e.id)) return false
-    seen.add(e.id)
-    return true
-  })
-
-  writeTSV(path.join(OUTPUT_DATA_DIR, 'Processes.tsv'), deduped)
-}
-
-function generateProcessRelationships(): void {
-  console.log('\n🔗 Generating Process relationships...')
-
-  const sourceFile = path.join(SOURCE_DIR, 'APQC', 'Processes.Relationships.tsv')
-  if (!fs.existsSync(sourceFile)) {
-    console.warn('  ⚠️  No Processes.Relationships.tsv found')
-    return
-  }
-
-  const sourceData = parseTSV(sourceFile)
-
-  const processToProcess: RelationshipRow[] = sourceData
-    .filter(row => row.predicate === 'hasSubProcess' || row.predicate === 'partOfProcess')
-    .map(row => ({
-      ns: 'business.org.ai',
-      from: row.from,
-      to: row.to,
-      predicate: row.predicate,
-      reverse: row.reverse || '',
-    }))
-
-  if (processToProcess.length > 0) {
-    writeTSV(path.join(OUTPUT_REL_DIR, 'Processes.Processes.tsv'), processToProcess)
-  }
-}
-
-function generateProducts(): void {
-  console.log('\n📦 Generating Products...')
-
-  const sourceFile = path.join(SOURCE_DIR, 'UNSPSC', 'Products.tsv')
-  if (!fs.existsSync(sourceFile)) {
-    console.warn('  ⚠️  No Products.tsv found')
-    return
-  }
-
-  const sourceData = parseTSV(sourceFile)
-
-  const entities = sourceData.map(row => ({
-    url: `business.org.ai/Products/${row.id}`,
-    canonical: `products.org.ai/${row.id}`,
-    ns: 'business.org.ai',
-    type: 'Product',
-    id: row.id,
-    code: row.code || '',
-    name: row.name || '',
-    description: row.description || '',
-  }))
-
-  // Dedupe by ID
-  const seen = new Set<string>()
-  const deduped = entities.filter(e => {
-    if (seen.has(e.id)) return false
-    seen.add(e.id)
-    return true
-  })
-
-  writeTSV(path.join(OUTPUT_DATA_DIR, 'Products.tsv'), deduped)
-}
-
-function generateServices(): void {
-  console.log('\n🛎️ Generating Services...')
-
-  const sourceFile = path.join(SOURCE_DIR, 'NAPCS', 'Services.tsv')
-  if (!fs.existsSync(sourceFile)) {
-    console.warn('  ⚠️  No Services.tsv found')
-    return
-  }
-
-  const sourceData = parseTSV(sourceFile)
-
-  const entities = sourceData.map(row => ({
-    url: `business.org.ai/Services/${row.id}`,
-    canonical: `services.org.ai/${row.id}`,
-    ns: 'business.org.ai',
-    type: 'Service',
-    id: row.id,
-    code: row.code || '',
-    name: row.name || '',
-    description: row.description || '',
-  }))
-
-  // Dedupe by ID
-  const seen = new Set<string>()
-  const deduped = entities.filter(e => {
-    if (seen.has(e.id)) return false
-    seen.add(e.id)
-    return true
-  })
-
-  writeTSV(path.join(OUTPUT_DATA_DIR, 'Services.tsv'), deduped)
-}
-
 // ============================================================================
 // Main
 // ============================================================================
@@ -758,27 +758,28 @@ function generateServices(): void {
 async function main() {
   console.log('🏢 Business.org.ai Data Generation')
   console.log('===================================')
+  console.log(`Source: ${SOURCE_DIR}`)
+  console.log(`Output: ${OUTPUT_DATA_DIR}`)
 
-  // 1. Foundational types
-  generateIndustries()
-  generateIndustryRelationships()
+  // 1. Industry hierarchy (NAICS)
+  generateIndustryHierarchy()
 
+  // 2. Process hierarchy (APQC)
+  generateProcessHierarchy()
+
+  // 3. Product hierarchy (UNSPSC)
+  generateProductHierarchy()
+
+  // 4. Service hierarchy (NAPCS)
+  generateServiceHierarchy()
+
+  // 5. Occupations and O*NET types
   generateOccupations()
-
-  // 2. O*NET types
   generateONETTypes()
   generateONETRelationships()
 
-  // 3. Tasks, Actions, Events
+  // 6. Tasks, Actions, Events
   generateTasksActionsEvents()
-
-  // 4. Processes
-  generateProcesses()
-  generateProcessRelationships()
-
-  // 5. Products & Services
-  generateProducts()
-  generateServices()
 
   console.log('\n✨ Done!')
 }
