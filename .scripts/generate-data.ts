@@ -362,6 +362,179 @@ function generateServiceHierarchy(): void {
 }
 
 // ============================================================================
+// Activities Hierarchy Generation (GWA + IWA + DWA → unified Activities)
+// ============================================================================
+
+/**
+ * Generate unified Activities hierarchy from:
+ * - GWA (General Work Activities) - Elements with code 4.A.*
+ * - IWA (Intermediate Work Activities) - code pattern 4.A.x.y.z.I##
+ * - DWA (Detailed Work Activities) - code pattern 4.A.x.y.z.I##.D##
+ */
+function generateActivitiesHierarchy(): void {
+  console.log('\n🎯 Generating Unified Activities Hierarchy...')
+
+  const activities: EntityRow[] = []
+  const hierarchyRels: RelationshipRow[] = []
+
+  // 1. Load GWA from Elements (codes starting with 4.A)
+  const elementsFile = path.join(SOURCE_DIR, 'ONET', 'Elements.tsv')
+  if (fs.existsSync(elementsFile)) {
+    const elements = parseTSV(elementsFile)
+    const gwaElements = elements.filter(row => row.code?.startsWith('4.A.'))
+
+    gwaElements.forEach(row => {
+      activities.push({
+        url: `https://business.org.ai/Activities/${row.id}`,
+        canonical: `https://activities.org.ai/${row.id}`,
+        ns: 'business.org.ai',
+        type: 'Activity',
+        id: row.id || '',
+        code: row.code || '',
+        name: row.name || '',
+        description: row.description || '',
+        level: 'GWA',
+        sourceType: 'GeneralWorkActivity',
+      })
+    })
+
+    // Create GWA hierarchy (parent codes based on dot-separated levels)
+    gwaElements.forEach(row => {
+      const code = row.code
+      if (!code) return
+
+      // Find parent code (remove last segment)
+      const parts = code.split('.')
+      if (parts.length > 2) {
+        const parentCode = parts.slice(0, -1).join('.')
+        const parent = gwaElements.find(e => e.code === parentCode)
+        if (parent && parent.id) {
+          hierarchyRels.push({
+            from: `https://business.org.ai/Activities/${parent.id}`,
+            to: `https://business.org.ai/Activities/${row.id}`,
+            predicate: 'hasSubActivity',
+            reverse: 'partOfActivity',
+          })
+        }
+      }
+    })
+
+    console.log(`  📊 Loaded ${gwaElements.length} GWA elements`)
+  }
+
+  // 2. Load IWA
+  const iwaFile = path.join(SOURCE_DIR, 'ONET', 'IntermediateWorkActivities.tsv')
+  if (fs.existsSync(iwaFile)) {
+    const iwas = parseTSV(iwaFile)
+
+    iwas.forEach(row => {
+      activities.push({
+        url: `https://business.org.ai/Activities/${row.id}`,
+        canonical: `https://activities.org.ai/IWA/${row.id}`,
+        ns: 'business.org.ai',
+        type: 'Activity',
+        id: row.id || '',
+        code: row.code || '',
+        name: row.name || '',
+        description: row.description || '',
+        level: 'IWA',
+        sourceType: 'IntermediateWorkActivity',
+      })
+
+      // Link IWA to parent GWA (extract GWA code from IWA code)
+      // IWA code format: 4.A.x.y.z.I## → GWA code: 4.A.x.y.z
+      const iwaCode = row.code
+      if (iwaCode && iwaCode.includes('.I')) {
+        const gwaCode = iwaCode.split('.I')[0]
+        // Find the GWA element with this code
+        const elementsData = parseTSV(elementsFile)
+        const parentGWA = elementsData.find(e => e.code === gwaCode)
+        if (parentGWA && parentGWA.id) {
+          hierarchyRels.push({
+            from: `https://business.org.ai/Activities/${parentGWA.id}`,
+            to: `https://business.org.ai/Activities/${row.id}`,
+            predicate: 'hasSubActivity',
+            reverse: 'partOfActivity',
+          })
+        }
+      }
+    })
+
+    console.log(`  📊 Loaded ${iwas.length} IWA elements`)
+  }
+
+  // 3. Load DWA
+  const dwaFile = path.join(SOURCE_DIR, 'ONET', 'DetailedWorkActivities.tsv')
+  if (fs.existsSync(dwaFile)) {
+    const dwas = parseTSV(dwaFile)
+
+    dwas.forEach(row => {
+      activities.push({
+        url: `https://business.org.ai/Activities/${row.id}`,
+        canonical: `https://activities.org.ai/DWA/${row.id}`,
+        ns: 'business.org.ai',
+        type: 'Activity',
+        id: row.id || '',
+        code: row.code || '',
+        name: row.name || '',
+        description: row.description || '',
+        level: 'DWA',
+        sourceType: 'DetailedWorkActivity',
+      })
+
+      // Link DWA to parent IWA (extract IWA code from DWA code)
+      // DWA code format: 4.A.x.y.z.I##.D## → IWA code: 4.A.x.y.z.I##
+      const dwaCode = row.code
+      if (dwaCode && dwaCode.includes('.D')) {
+        const iwaCode = dwaCode.split('.D')[0]
+        // Find the IWA element with this code
+        const iwaData = parseTSV(iwaFile)
+        const parentIWA = iwaData.find(e => e.code === iwaCode)
+        if (parentIWA && parentIWA.id) {
+          hierarchyRels.push({
+            from: `https://business.org.ai/Activities/${parentIWA.id}`,
+            to: `https://business.org.ai/Activities/${row.id}`,
+            predicate: 'hasSubActivity',
+            reverse: 'partOfActivity',
+          })
+        }
+      }
+    })
+
+    console.log(`  📊 Loaded ${dwas.length} DWA elements`)
+  }
+
+  // Dedupe activities by ID
+  const seen = new Set<string>()
+  const dedupedActivities = activities.filter(a => {
+    if (!a.id || seen.has(a.id)) return false
+    seen.add(a.id)
+    return true
+  })
+
+  // Write unified Activities.tsv
+  if (dedupedActivities.length > 0) {
+    writeTSV(path.join(OUTPUT_DATA_DIR, 'Activities.tsv'), dedupedActivities)
+  }
+
+  // Dedupe hierarchy relationships
+  const seenRels = new Set<string>()
+  const dedupedRels = hierarchyRels.filter(r => {
+    const key = `${r.from}|${r.to}`
+    if (seenRels.has(key)) return false
+    seenRels.add(key)
+    return true
+  })
+
+  // Write Activities.Hierarchy.tsv
+  if (dedupedRels.length > 0) {
+    writeTSV(path.join(OUTPUT_REL_DIR, 'Activities.Hierarchy.tsv'), dedupedRels)
+  }
+
+  console.log(`  ✅ Unified ${dedupedActivities.length} activities with ${dedupedRels.length} hierarchy relationships`)
+}
+
+// ============================================================================
 // ONET Entity and Relationship Generation (All 41 files)
 // ============================================================================
 
@@ -833,7 +1006,10 @@ async function main() {
   // 4. Service hierarchy (NAPCS)
   generateServiceHierarchy()
 
-  // 5. All ONET entities and relationships (14 entity types, 25 relationship files)
+  // 5. Unified Activities hierarchy (GWA + IWA + DWA)
+  generateActivitiesHierarchy()
+
+  // 6. All ONET entities and relationships (14 entity types, 25 relationship files)
   generateONETEntities()
   generateONETRelationships()
 
