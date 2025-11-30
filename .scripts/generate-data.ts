@@ -61,6 +61,7 @@ interface RelationshipRow {
   to: string
   predicate: string
   reverse: string
+  [key: string]: string // For additional properties like scaleId, dataValue, etc.
 }
 
 // ============================================================================
@@ -361,58 +362,129 @@ function generateServiceHierarchy(): void {
 }
 
 // ============================================================================
-// ONET Occupations and Related Types
+// ONET Entity and Relationship Generation (All 41 files)
 // ============================================================================
 
-function generateOccupations(): void {
-  console.log('\n👤 Generating Occupations...')
+/**
+ * ONET entity type configurations
+ */
+const ONET_ENTITY_TYPES = [
+  { source: 'Occupations.tsv', output: 'Occupations.tsv', type: 'Occupation', domain: 'occupations.org.ai', urlType: 'Occupations' },
+  { source: 'Elements.tsv', output: 'Elements.tsv', type: 'Element', domain: 'onet.org.ai/Elements', urlType: 'Elements' },
+  { source: 'DetailedWorkActivities.tsv', output: 'DetailedWorkActivities.tsv', type: 'DetailedWorkActivity', domain: 'activities.org.ai/DWA', urlType: 'DetailedWorkActivities' },
+  { source: 'IntermediateWorkActivities.tsv', output: 'IntermediateWorkActivities.tsv', type: 'IntermediateWorkActivity', domain: 'activities.org.ai/IWA', urlType: 'IntermediateWorkActivities' },
+  { source: 'Tasks.tsv', output: 'OccupationTasks.tsv', type: 'Task', domain: 'tasks.org.ai', urlType: 'Tasks' },
+  { source: 'EmergingTasks.tsv', output: 'EmergingTasks.tsv', type: 'EmergingTask', domain: 'tasks.org.ai/Emerging', urlType: 'EmergingTasks' },
+  { source: 'JobZones.tsv', output: 'JobZones.tsv', type: 'JobZone', domain: 'onet.org.ai/JobZones', urlType: 'JobZones' },
+  { source: 'WorkContexts.tsv', output: 'WorkContexts.tsv', type: 'WorkContext', domain: 'context.org.ai', urlType: 'WorkContexts' },
+  { source: 'EducationLevels.tsv', output: 'EducationLevels.tsv', type: 'EducationLevel', domain: 'education.org.ai/Levels', urlType: 'EducationLevels' },
+  { source: 'Scales.tsv', output: 'Scales.tsv', type: 'Scale', domain: 'onet.org.ai/Scales', urlType: 'Scales' },
+  { source: 'ScaleAnchors.tsv', output: 'ScaleAnchors.tsv', type: 'ScaleAnchor', domain: 'onet.org.ai/ScaleAnchors', urlType: 'ScaleAnchors' },
+  { source: 'RIASECKeywords.tsv', output: 'RIASECKeywords.tsv', type: 'RIASECKeyword', domain: 'onet.org.ai/RIASEC', urlType: 'RIASECKeywords' },
+  { source: 'TaskCategories.tsv', output: 'TaskCategories.tsv', type: 'TaskCategory', domain: 'tasks.org.ai/Categories', urlType: 'TaskCategories' },
+  { source: 'UNSPSCCommodities.tsv', output: 'OccupationCommodities.tsv', type: 'Commodity', domain: 'products.org.ai', urlType: 'Commodities' },
+]
 
-  const sourceFile = path.join(SOURCE_DIR, 'ONET', 'Occupations.tsv')
-  const sourceData = parseTSV(sourceFile)
+/**
+ * ONET relationship file configurations
+ */
+const ONET_RELATIONSHIP_FILES = [
+  'Occupations.Abilities',
+  'Occupations.Skills',
+  'Occupations.Knowledge',
+  'Occupations.WorkActivities',
+  'Occupations.WorkContexts',
+  'Occupations.WorkStyles',
+  'Occupations.WorkValues',
+  'Occupations.Interests',
+  'Occupations.JobZones',
+  'Occupations.Tasks',
+  'Occupations.RelatedOccupations',
+  'Occupations.AlternateTitles',
+  'Occupations.ReportedTitles',
+  'Occupations.Education',
+  'Occupations.TechnologySkills',
+  'Occupations.ToolsUsed',
+  'Tasks.DetailedWorkActivities',
+  'Abilities.WorkActivities',
+  'Abilities.WorkContexts',
+  'Skills.WorkActivities',
+  'Skills.WorkContexts',
+  'Interests.Activities',
+  'Interests.Occupations',
+  'BasicInterests.RIASEC',
+  'Occupations.Metadata',
+]
 
-  const entities = sourceData.map(row => ({
-    url: `https://business.org.ai/Occupations/${row.id}`,
-    canonical: `https://occupations.org.ai/${row.id}`,
-    ns: 'business.org.ai',
-    type: 'Occupation',
-    id: row.id || '',
-    code: row.code || '',
-    name: row.name || '',
-    description: row.description || '',
-  }))
+/**
+ * Build a lookup map from ONET code (like "11-1011.00") to entity ID (like "ChiefExecutives")
+ */
+function buildONETCodeToIdMap(): Map<string, string> {
+  const codeToId = new Map<string, string>()
 
-  // Dedupe by ID
-  const seen = new Set<string>()
-  const deduped = entities.filter(e => {
-    if (!e.id || seen.has(e.id)) return false
-    seen.add(e.id)
-    return true
-  })
+  // Load occupations to get code → id mappings
+  const occFile = path.join(SOURCE_DIR, 'ONET', 'Occupations.tsv')
+  if (fs.existsSync(occFile)) {
+    const occs = parseTSV(occFile)
+    occs.forEach(row => {
+      if (row.code && row.id) {
+        // Map both with and without dots: "11-1011.00" → "ChiefExecutives"
+        codeToId.set(row.code, row.id)
+        // Also without dots: "11-101100" → "ChiefExecutives"
+        codeToId.set(row.code.replace(/\./g, ''), row.id)
+      }
+    })
+  }
 
-  writeTSV(path.join(OUTPUT_DATA_DIR, 'Occupations.tsv'), deduped)
+  // Load elements to get code → id mappings
+  const elemFile = path.join(SOURCE_DIR, 'ONET', 'Elements.tsv')
+  if (fs.existsSync(elemFile)) {
+    const elems = parseTSV(elemFile)
+    elems.forEach(row => {
+      if (row.code && row.id) {
+        codeToId.set(row.code, row.id)
+      }
+    })
+  }
+
+  return codeToId
 }
 
-function generateONETTypes(): void {
-  console.log('\n🎯 Generating O*NET types...')
+/**
+ * Transform source URL to business.org.ai URL
+ */
+function transformONETUrl(sourceUrl: string, codeToId: Map<string, string>): string {
+  // Parse the source URL
+  // Example: https://onet.org.ai/Occupations/11-101100 → https://business.org.ai/Occupations/ChiefExecutives
+  const match = sourceUrl.match(/https:\/\/onet\.org\.ai\/(\w+)\/(.+)$/)
+  if (!match) return sourceUrl
 
-  const types = [
-    { source: 'Skills.tsv', output: 'Skills.tsv', type: 'Skill', domain: 'skills.org.ai' },
-    { source: 'Knowledge.tsv', output: 'Knowledge.tsv', type: 'Knowledge', domain: 'knowledge.org.ai' },
-    { source: 'Abilities.tsv', output: 'Abilities.tsv', type: 'Ability', domain: 'abilities.org.ai' },
-    { source: 'WorkActivities.tsv', output: 'WorkActivities.tsv', type: 'WorkActivity', domain: 'activities.org.ai' },
-  ]
+  const [, type, identifier] = match
+  const resolvedId = codeToId.get(identifier) || identifier
 
-  for (const t of types) {
-    const sourceFile = path.join(SOURCE_DIR, 'ONET', t.source)
-    if (!fs.existsSync(sourceFile)) continue
+  return `https://business.org.ai/${type}/${resolvedId}`
+}
+
+/**
+ * Generate all ONET entity types
+ */
+function generateONETEntities(): void {
+  console.log('\n👤 Generating ONET Entities...')
+
+  for (const config of ONET_ENTITY_TYPES) {
+    const sourceFile = path.join(SOURCE_DIR, 'ONET', config.source)
+    if (!fs.existsSync(sourceFile)) {
+      console.warn(`  ⚠️  Missing source: ${config.source}`)
+      continue
+    }
 
     const sourceData = parseTSV(sourceFile)
 
     const entities = sourceData.map(row => ({
-      url: `https://business.org.ai/${t.type}s/${row.id}`,
-      canonical: `https://${t.domain}/${row.id}`,
+      url: `https://business.org.ai/${config.urlType}/${row.id}`,
+      canonical: `https://${config.domain}/${row.id}`,
       ns: 'business.org.ai',
-      type: t.type,
+      type: config.type,
       id: row.id || '',
       code: row.code || '',
       name: row.name || '',
@@ -427,63 +499,51 @@ function generateONETTypes(): void {
       return true
     })
 
-    writeTSV(path.join(OUTPUT_DATA_DIR, t.output), deduped)
+    if (deduped.length > 0) {
+      writeTSV(path.join(OUTPUT_DATA_DIR, config.output), deduped)
+    }
   }
 }
 
+/**
+ * Generate all ONET relationships (with score data as edge properties)
+ */
 function generateONETRelationships(): void {
-  console.log('\n🔗 Generating O*NET relationships...')
+  console.log('\n🔗 Generating ONET Relationships...')
 
-  const sourceFile = path.join(SOURCE_DIR, 'ONET', 'relationships', 'Occupations.tsv')
-  if (!fs.existsSync(sourceFile)) {
-    console.warn('  ⚠️  No ONET relationships found')
-    return
-  }
+  const codeToId = buildONETCodeToIdMap()
 
-  const sourceData = parseTSV(sourceFile)
-
-  // Load entity lookups to determine target types
-  const skills = new Set(parseTSV(path.join(SOURCE_DIR, 'ONET', 'Skills.tsv')).map(r => normalizeToPascalCase(r.id || '')))
-  const knowledge = new Set(parseTSV(path.join(SOURCE_DIR, 'ONET', 'Knowledge.tsv')).map(r => normalizeToPascalCase(r.id || '')))
-  const abilities = new Set(parseTSV(path.join(SOURCE_DIR, 'ONET', 'Abilities.tsv')).map(r => normalizeToPascalCase(r.id || '')))
-
-  // Group relationships by to-type
-  const occToSkills: RelationshipRow[] = []
-  const occToKnowledge: RelationshipRow[] = []
-  const occToAbilities: RelationshipRow[] = []
-  const occToOccupations: RelationshipRow[] = []
-
-  sourceData.forEach(row => {
-    const from = row.from || ''
-    const to = row.to || ''
-    const toNormalized = normalizeToPascalCase(to.split('/').pop() || '')
-    const predicate = row.predicate || ''
-    const reverse = row.reverse || ''
-
-    const rel = { from, to, predicate, reverse }
-
-    if (skills.has(toNormalized)) {
-      occToSkills.push(rel)
-    } else if (knowledge.has(toNormalized)) {
-      occToKnowledge.push(rel)
-    } else if (abilities.has(toNormalized)) {
-      occToAbilities.push(rel)
-    } else {
-      occToOccupations.push(rel)
+  for (const relName of ONET_RELATIONSHIP_FILES) {
+    const sourceFile = path.join(SOURCE_DIR, 'ONET', 'relationships', `${relName}.tsv`)
+    if (!fs.existsSync(sourceFile)) {
+      console.warn(`  ⚠️  Missing relationship: ${relName}.tsv`)
+      continue
     }
-  })
 
-  if (occToSkills.length > 0) {
-    writeTSV(path.join(OUTPUT_REL_DIR, 'Occupations.Skills.tsv'), occToSkills)
-  }
-  if (occToKnowledge.length > 0) {
-    writeTSV(path.join(OUTPUT_REL_DIR, 'Occupations.Knowledge.tsv'), occToKnowledge)
-  }
-  if (occToAbilities.length > 0) {
-    writeTSV(path.join(OUTPUT_REL_DIR, 'Occupations.Abilities.tsv'), occToAbilities)
-  }
-  if (occToOccupations.length > 0) {
-    writeTSV(path.join(OUTPUT_REL_DIR, 'Occupations.Occupations.tsv'), occToOccupations)
+    const sourceData = parseTSV(sourceFile)
+    if (sourceData.length === 0) continue
+
+    // Get all headers from the first row to preserve additional columns (scaleId, dataValue, etc.)
+    const firstRow = sourceData[0]
+    const additionalCols = Object.keys(firstRow).filter(k => !['from', 'to', 'predicate', 'reverse'].includes(k))
+
+    const relationships = sourceData.map(row => {
+      const rel: RelationshipRow = {
+        from: transformONETUrl(row.from || '', codeToId),
+        to: transformONETUrl(row.to || '', codeToId),
+        predicate: row.predicate || '',
+        reverse: row.reverse || '',
+      }
+
+      // Preserve additional columns (scores, etc.)
+      additionalCols.forEach(col => {
+        rel[col] = row[col] || ''
+      })
+
+      return rel
+    })
+
+    writeTSV(path.join(OUTPUT_REL_DIR, `${relName}.tsv`), relationships)
   }
 }
 
@@ -773,9 +833,8 @@ async function main() {
   // 4. Service hierarchy (NAPCS)
   generateServiceHierarchy()
 
-  // 5. Occupations and O*NET types
-  generateOccupations()
-  generateONETTypes()
+  // 5. All ONET entities and relationships (14 entity types, 25 relationship files)
+  generateONETEntities()
   generateONETRelationships()
 
   // 6. Tasks, Actions, Events

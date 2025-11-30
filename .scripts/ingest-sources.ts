@@ -3,43 +3,14 @@
 /**
  * Source Data Ingestion Script
  *
- * Transforms data from root .data/ folder into standardized .source/ format
- * with proper hierarchical types for each standard.
+ * Transforms raw source data into standardized .source/ format.
+ *
+ * For ONET, reads directly from .source/onet/ONET.*.tsv files (41 files)
+ * For other standards, reads from processed .data/ files
  *
  * URL Pattern:
  *   url: https://standards.org.ai/[Source]/[Type]/[Name]
  *   canonical: https://[source].org.ai/[Type]/[Name] (only for sources we own)
- *
- * Standard Hierarchies:
- *
- * NAICS (by code length):
- *   - 2 digits = Sectors (e.g., 11)
- *   - 3 digits = Subsectors (e.g., 111)
- *   - 4 digits = IndustryGroups (e.g., 1111)
- *   - 5 digits = Industries (e.g., 11111)
- *   - 6 digits = NationalIndustries (e.g., 111110)
- *
- * APQC (by hierarchy depth):
- *   - X.0 = Categories (e.g., 1.0)
- *   - X.X = ProcessGroups (e.g., 1.1)
- *   - X.X.X = Processes (e.g., 1.1.1)
- *   - X.X.X.X+ = Activities (e.g., 1.1.1.1)
- *
- * UNSPSC (by code length):
- *   - 2 digits = Segments (e.g., 11)
- *   - 4 digits = Families (e.g., 1111)
- *   - 6 digits = Classes (e.g., 111111)
- *   - 8 digits = Commodities (e.g., 11111111)
- *
- * NAPCS (by code length):
- *   - 2-3 digits = Sections
- *   - 4 digits = Subsections
- *   - 5 digits = Groups
- *   - 6 digits = Classes
- *   - 7 digits = Subclasses
- *
- * ONET:
- *   - Occupations, Skills, Knowledge, Abilities, Tasks, WorkActivities
  */
 
 import fs from 'fs'
@@ -51,15 +22,8 @@ const __dirname = path.dirname(__filename)
 
 // Paths
 const ROOT_DATA_DIR = path.resolve(__dirname, '../../../.data')
+const ROOT_SOURCE_DIR = path.resolve(__dirname, '../../../.source')
 const SOURCE_DIR = path.resolve(__dirname, '../.source')
-
-// Canonical domains for sources we own
-const CANONICAL_DOMAINS: Record<string, string> = {
-  ONET: 'onet.org.ai',
-  NAICS: 'naics.org.ai',
-  GS1: 'gs1.org.ai',
-  APQC: 'apqc.org.ai',
-}
 
 // ============================================================================
 // Utility Functions
@@ -91,7 +55,6 @@ function writeTSV(filePath: string, data: Record<string, string>[]): void {
     return
   }
 
-  // Ensure directory exists
   const dir = path.dirname(filePath)
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true })
@@ -109,6 +72,568 @@ function ensureDir(dirPath: string): void {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true })
   }
+}
+
+function toId(text: string | undefined): string {
+  if (!text) return ''
+  return text.replace(/[^\w\s-]/g, '').replace(/\s+/g, '')
+}
+
+// ============================================================================
+// ONET Ingestion (41 files)
+// ============================================================================
+
+function ingestONET(): void {
+  console.log('\n👷 Ingesting ONET (41 files)...')
+
+  const onetDir = path.join(ROOT_SOURCE_DIR, 'onet')
+  if (!fs.existsSync(onetDir)) {
+    console.warn('  ⚠️  ONET source directory not found')
+    return
+  }
+
+  const outDir = path.join(SOURCE_DIR, 'ONET')
+  const relDir = path.join(outDir, 'relationships')
+  ensureDir(outDir)
+  ensureDir(relDir)
+
+  // ===== ENTITY TYPES =====
+
+  // 1. Occupations (from OccupationData)
+  const occupations = parseTSV(path.join(onetDir, 'ONET.OccupationData.tsv'))
+  const occEntities = occupations.map(row => ({
+    url: `https://standards.org.ai/ONET/Occupations/${toId(row.title)}`,
+    canonical: `https://onet.org.ai/Occupations/${toId(row.title)}`,
+    ns: 'standards.org.ai',
+    type: 'Occupation',
+    id: toId(row.title),
+    code: row.oNETSOCCode || '',
+    name: row.title || '',
+    description: row.description || '',
+  }))
+  writeTSV(path.join(outDir, 'Occupations.tsv'), occEntities)
+
+  // 2. Content Model Reference (taxonomy of all ONET elements)
+  const contentModel = parseTSV(path.join(onetDir, 'ONET.ContentModelReference.tsv'))
+  const elements = contentModel.map(row => ({
+    url: `https://standards.org.ai/ONET/Elements/${toId(row.elementName)}`,
+    canonical: `https://onet.org.ai/Elements/${toId(row.elementName)}`,
+    ns: 'standards.org.ai',
+    type: 'Element',
+    id: toId(row.elementName),
+    code: row.elementID || '',
+    name: row.elementName || '',
+    description: row.description || '',
+  }))
+  writeTSV(path.join(outDir, 'Elements.tsv'), elements)
+
+  // 3. DWA Reference (Detailed Work Activities)
+  const dwaRef = parseTSV(path.join(onetDir, 'ONET.DWAReference.tsv'))
+  const dwas = dwaRef.map(row => ({
+    url: `https://standards.org.ai/ONET/DetailedWorkActivities/${toId(row.dWATitle)}`,
+    canonical: `https://onet.org.ai/DetailedWorkActivities/${toId(row.dWATitle)}`,
+    ns: 'standards.org.ai',
+    type: 'DetailedWorkActivity',
+    id: toId(row.dWATitle),
+    code: row.dWAID || '',
+    iwaId: row.iWAID || '',
+    name: row.dWATitle || '',
+    description: row.dWATitle || '',
+  }))
+  writeTSV(path.join(outDir, 'DetailedWorkActivities.tsv'), dwas)
+
+  // 4. IWA Reference (Intermediate Work Activities)
+  const iwaRef = parseTSV(path.join(onetDir, 'ONET.IWAReference.tsv'))
+  const iwas = iwaRef.map(row => ({
+    url: `https://standards.org.ai/ONET/IntermediateWorkActivities/${toId(row.iWATitle)}`,
+    canonical: `https://onet.org.ai/IntermediateWorkActivities/${toId(row.iWATitle)}`,
+    ns: 'standards.org.ai',
+    type: 'IntermediateWorkActivity',
+    id: toId(row.iWATitle),
+    code: row.iWAID || '',
+    elementId: row.elementID || '',
+    name: row.iWATitle || '',
+    description: row.iWATitle || '',
+  }))
+  writeTSV(path.join(outDir, 'IntermediateWorkActivities.tsv'), iwas)
+
+  // 5. Task Statements
+  const tasks = parseTSV(path.join(onetDir, 'ONET.TaskStatements.tsv'))
+  const taskEntities = tasks.map(row => ({
+    url: `https://standards.org.ai/ONET/Tasks/${row.taskID}`,
+    canonical: `https://onet.org.ai/Tasks/${row.taskID}`,
+    ns: 'standards.org.ai',
+    type: 'Task',
+    id: row.taskID || '',
+    code: row.oNETSOCCode || '',
+    name: row.task || '',
+    description: row.task || '',
+    taskType: row.taskType || '',
+  }))
+  writeTSV(path.join(outDir, 'Tasks.tsv'), taskEntities)
+
+  // 6. Emerging Tasks
+  const emergingTasks = parseTSV(path.join(onetDir, 'ONET.EmergingTasks.tsv'))
+  const emergingEntities = emergingTasks.map(row => ({
+    url: `https://standards.org.ai/ONET/EmergingTasks/${row.taskID || toId(row.task)}`,
+    canonical: `https://onet.org.ai/EmergingTasks/${row.taskID || toId(row.task)}`,
+    ns: 'standards.org.ai',
+    type: 'EmergingTask',
+    id: row.taskID || toId(row.task),
+    code: row.oNETSOCCode || '',
+    name: row.task || '',
+    description: row.task || '',
+    category: row.category || '',
+  }))
+  writeTSV(path.join(outDir, 'EmergingTasks.tsv'), emergingEntities)
+
+  // 7. Job Zones
+  const jobZones = parseTSV(path.join(onetDir, 'ONET.JobZoneReference.tsv'))
+  const jobZoneEntities = jobZones.map(row => ({
+    url: `https://standards.org.ai/ONET/JobZones/${row.jobZone}`,
+    canonical: `https://onet.org.ai/JobZones/${row.jobZone}`,
+    ns: 'standards.org.ai',
+    type: 'JobZone',
+    id: row.jobZone || '',
+    code: row.jobZone || '',
+    name: row.name || `Job Zone ${row.jobZone}`,
+    description: row.experience || '',
+    education: row.education || '',
+    training: row.jobTraining || '',
+    examples: row.examples || '',
+    svpRange: row.sVPRangeLow && row.sVPRangeHigh ? `${row.sVPRangeLow}-${row.sVPRangeHigh}` : '',
+  }))
+  writeTSV(path.join(outDir, 'JobZones.tsv'), jobZoneEntities)
+
+  // 8. Work Context Categories
+  const workContextCats = parseTSV(path.join(onetDir, 'ONET.WorkContextCategories.tsv'))
+  const workContextEntities = workContextCats.map(row => ({
+    url: `https://standards.org.ai/ONET/WorkContexts/${toId(row.elementName)}`,
+    canonical: `https://onet.org.ai/WorkContexts/${toId(row.elementName)}`,
+    ns: 'standards.org.ai',
+    type: 'WorkContext',
+    id: toId(row.elementName),
+    code: row.elementID || '',
+    name: row.elementName || '',
+    description: row.description || '',
+    categoryId: row.categoryID || '',
+    category: row.category || '',
+  }))
+  writeTSV(path.join(outDir, 'WorkContexts.tsv'), workContextEntities)
+
+  // 9. Education Training Categories
+  const eduCats = parseTSV(path.join(onetDir, 'ONET.EducationTrainingAndExperienceCategories.tsv'))
+  const eduCatEntities = eduCats.map(row => ({
+    url: `https://standards.org.ai/ONET/EducationLevels/${toId(row.categoryDescription)}`,
+    canonical: `https://onet.org.ai/EducationLevels/${toId(row.categoryDescription)}`,
+    ns: 'standards.org.ai',
+    type: 'EducationLevel',
+    id: toId(row.categoryDescription),
+    code: row.category || '',
+    scaleId: row.scaleID || '',
+    name: row.categoryDescription || '',
+    description: row.categoryDescription || '',
+  }))
+  writeTSV(path.join(outDir, 'EducationLevels.tsv'), eduCatEntities)
+
+  // 10. Scales Reference
+  const scales = parseTSV(path.join(onetDir, 'ONET.ScalesReference.tsv'))
+  const scaleEntities = scales.map(row => ({
+    url: `https://standards.org.ai/ONET/Scales/${row.scaleID}`,
+    canonical: `https://onet.org.ai/Scales/${row.scaleID}`,
+    ns: 'standards.org.ai',
+    type: 'Scale',
+    id: row.scaleID || '',
+    code: row.scaleID || '',
+    name: row.scaleName || '',
+    description: row.scaleName || '',
+    minimum: row.minimum || '',
+    maximum: row.maximum || '',
+  }))
+  writeTSV(path.join(outDir, 'Scales.tsv'), scaleEntities)
+
+  // 11. Level Scale Anchors
+  const anchors = parseTSV(path.join(onetDir, 'ONET.LevelScaleAnchors.tsv'))
+  const anchorEntities = anchors.map(row => ({
+    url: `https://standards.org.ai/ONET/ScaleAnchors/${row.elementID}_${row.scaleID}_${row.anchorValue}`,
+    canonical: `https://onet.org.ai/ScaleAnchors/${row.elementID}_${row.scaleID}_${row.anchorValue}`,
+    ns: 'standards.org.ai',
+    type: 'ScaleAnchor',
+    id: `${row.elementID}_${row.scaleID}_${row.anchorValue}`,
+    elementId: row.elementID || '',
+    elementName: row.elementName || '',
+    scaleId: row.scaleID || '',
+    anchorValue: row.anchorValue || '',
+    anchorDescription: row.anchorDescription || '',
+  }))
+  writeTSV(path.join(outDir, 'ScaleAnchors.tsv'), anchorEntities)
+
+  // 12. RIASEC Keywords
+  const riasec = parseTSV(path.join(onetDir, 'ONET.RIASECKeywords.tsv'))
+  const riasecEntities = riasec.map(row => ({
+    url: `https://standards.org.ai/ONET/RIASECKeywords/${toId(row.keyword)}`,
+    canonical: `https://onet.org.ai/RIASECKeywords/${toId(row.keyword)}`,
+    ns: 'standards.org.ai',
+    type: 'RIASECKeyword',
+    id: toId(row.keyword),
+    riasecAreaId: row.rIASECAreaID || '',
+    keyword: row.keyword || '',
+  }))
+  writeTSV(path.join(outDir, 'RIASECKeywords.tsv'), riasecEntities)
+
+  // 13. Task Categories
+  const taskCats = parseTSV(path.join(onetDir, 'ONET.TaskCategories.tsv'))
+  if (taskCats.length > 0) {
+    const taskCatEntities = taskCats.map(row => ({
+      url: `https://standards.org.ai/ONET/TaskCategories/${row.taskType || toId(row.taskTypeDescription || '')}`,
+      canonical: `https://onet.org.ai/TaskCategories/${row.taskType || toId(row.taskTypeDescription || '')}`,
+      ns: 'standards.org.ai',
+      type: 'TaskCategory',
+      id: row.taskType || toId(row.taskTypeDescription || ''),
+      code: row.taskType || '',
+      name: row.taskTypeDescription || '',
+      description: row.taskTypeDescription || '',
+    }))
+    writeTSV(path.join(outDir, 'TaskCategories.tsv'), taskCatEntities)
+  }
+
+  // 14. UNSPSC Reference (for tools/technology)
+  const unspscRef = parseTSV(path.join(onetDir, 'ONET.UNSPSCReference.tsv'))
+  const unspscEntities = unspscRef.map(row => ({
+    url: `https://standards.org.ai/ONET/UNSPSCCommodities/${row.commodityCode}`,
+    canonical: `https://onet.org.ai/UNSPSCCommodities/${row.commodityCode}`,
+    ns: 'standards.org.ai',
+    type: 'UNSPSCCommodity',
+    id: row.commodityCode || '',
+    code: row.commodityCode || '',
+    name: row.commodityTitle || '',
+    description: row.commodityTitle || '',
+    classCode: row.classCode || '',
+    classTitle: row.classTitle || '',
+    familyCode: row.familyCode || '',
+    familyTitle: row.familyTitle || '',
+    segmentCode: row.segmentCode || '',
+    segmentTitle: row.segmentTitle || '',
+  }))
+  writeTSV(path.join(outDir, 'UNSPSCCommodities.tsv'), unspscEntities)
+
+  // ===== RELATIONSHIP/RATING FILES =====
+
+  // 15. Abilities (Occupation → Ability ratings)
+  const abilities = parseTSV(path.join(onetDir, 'ONET.Abilities.tsv'))
+  const abilityRels = abilities.map(row => ({
+    from: `https://onet.org.ai/Occupations/${toId(row.title || row.oNETSOCCode)}`,
+    to: `https://onet.org.ai/Elements/${toId(row.elementName)}`,
+    predicate: 'requiresAbility',
+    reverse: 'requiredByOccupation',
+    scaleId: row.scaleID || '',
+    dataValue: row.dataValue || '',
+    standardError: row.standardError || '',
+    n: row.n || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.Abilities.tsv'), abilityRels)
+
+  // 16. Skills (Occupation → Skill ratings)
+  const skills = parseTSV(path.join(onetDir, 'ONET.Skills.tsv'))
+  const skillRels = skills.map(row => ({
+    from: `https://onet.org.ai/Occupations/${toId(row.title || row.oNETSOCCode)}`,
+    to: `https://onet.org.ai/Elements/${toId(row.elementName)}`,
+    predicate: 'requiresSkill',
+    reverse: 'requiredByOccupation',
+    scaleId: row.scaleID || '',
+    dataValue: row.dataValue || '',
+    standardError: row.standardError || '',
+    n: row.n || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.Skills.tsv'), skillRels)
+
+  // 17. Knowledge (Occupation → Knowledge ratings)
+  const knowledge = parseTSV(path.join(onetDir, 'ONET.Knowledge.tsv'))
+  const knowledgeRels = knowledge.map(row => ({
+    from: `https://onet.org.ai/Occupations/${toId(row.title || row.oNETSOCCode)}`,
+    to: `https://onet.org.ai/Elements/${toId(row.elementName)}`,
+    predicate: 'requiresKnowledge',
+    reverse: 'requiredByOccupation',
+    scaleId: row.scaleID || '',
+    dataValue: row.dataValue || '',
+    standardError: row.standardError || '',
+    n: row.n || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.Knowledge.tsv'), knowledgeRels)
+
+  // 18. Work Activities (Occupation → WorkActivity ratings)
+  const workActivities = parseTSV(path.join(onetDir, 'ONET.WorkActivities.tsv'))
+  const workActivityRels = workActivities.map(row => ({
+    from: `https://onet.org.ai/Occupations/${toId(row.title || row.oNETSOCCode)}`,
+    to: `https://onet.org.ai/Elements/${toId(row.elementName)}`,
+    predicate: 'performsActivity',
+    reverse: 'performedByOccupation',
+    scaleId: row.scaleID || '',
+    dataValue: row.dataValue || '',
+    standardError: row.standardError || '',
+    n: row.n || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.WorkActivities.tsv'), workActivityRels)
+
+  // 19. Work Context (Occupation → WorkContext ratings)
+  const workContext = parseTSV(path.join(onetDir, 'ONET.WorkContext.tsv'))
+  const workContextRels = workContext.map(row => ({
+    from: `https://onet.org.ai/Occupations/${toId(row.title || row.oNETSOCCode)}`,
+    to: `https://onet.org.ai/WorkContexts/${toId(row.elementName)}`,
+    predicate: 'hasWorkContext',
+    reverse: 'workContextOfOccupation',
+    scaleId: row.scaleID || '',
+    category: row.category || '',
+    dataValue: row.dataValue || '',
+    standardError: row.standardError || '',
+    n: row.n || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.WorkContexts.tsv'), workContextRels)
+
+  // 20. Work Styles (Occupation → WorkStyle ratings)
+  const workStyles = parseTSV(path.join(onetDir, 'ONET.WorkStyles.tsv'))
+  const workStyleRels = workStyles.map(row => ({
+    from: `https://onet.org.ai/Occupations/${toId(row.title || row.oNETSOCCode)}`,
+    to: `https://onet.org.ai/Elements/${toId(row.elementName)}`,
+    predicate: 'requiresWorkStyle',
+    reverse: 'requiredByOccupation',
+    scaleId: row.scaleID || '',
+    dataValue: row.dataValue || '',
+    standardError: row.standardError || '',
+    n: row.n || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.WorkStyles.tsv'), workStyleRels)
+
+  // 21. Work Values (Occupation → WorkValue ratings)
+  const workValues = parseTSV(path.join(onetDir, 'ONET.WorkValues.tsv'))
+  const workValueRels = workValues.map(row => ({
+    from: `https://onet.org.ai/Occupations/${toId(row.title || row.oNETSOCCode)}`,
+    to: `https://onet.org.ai/Elements/${toId(row.elementName)}`,
+    predicate: 'hasWorkValue',
+    reverse: 'workValueOfOccupation',
+    scaleId: row.scaleID || '',
+    dataValue: row.dataValue || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.WorkValues.tsv'), workValueRels)
+
+  // 22. Interests (Occupation → Interest ratings)
+  const interests = parseTSV(path.join(onetDir, 'ONET.Interests.tsv'))
+  const interestRels = interests.map(row => ({
+    from: `https://onet.org.ai/Occupations/${toId(row.title || row.oNETSOCCode)}`,
+    to: `https://onet.org.ai/Elements/${toId(row.elementName)}`,
+    predicate: 'hasInterest',
+    reverse: 'interestOfOccupation',
+    scaleId: row.scaleID || '',
+    dataValue: row.dataValue || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.Interests.tsv'), interestRels)
+
+  // 23. Job Zones (Occupation → JobZone)
+  const jobZoneData = parseTSV(path.join(onetDir, 'ONET.JobZones.tsv'))
+  const jobZoneRels = jobZoneData.map(row => ({
+    from: `https://onet.org.ai/Occupations/${toId(row.title || row.oNETSOCCode)}`,
+    to: `https://onet.org.ai/JobZones/${row.jobZone}`,
+    predicate: 'hasJobZone',
+    reverse: 'jobZoneOfOccupation',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.JobZones.tsv'), jobZoneRels)
+
+  // 24. Task Ratings (Occupation → Task ratings)
+  const taskRatings = parseTSV(path.join(onetDir, 'ONET.TaskRatings.tsv'))
+  const taskRatingRels = taskRatings.map(row => ({
+    from: `https://onet.org.ai/Occupations/${toId(row.title || row.oNETSOCCode)}`,
+    to: `https://onet.org.ai/Tasks/${row.taskID}`,
+    predicate: 'performsTask',
+    reverse: 'performedByOccupation',
+    scaleId: row.scaleID || '',
+    category: row.category || '',
+    dataValue: row.dataValue || '',
+    standardError: row.standardError || '',
+    n: row.n || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.Tasks.tsv'), taskRatingRels)
+
+  // 25. Related Occupations
+  const relatedOccs = parseTSV(path.join(onetDir, 'ONET.RelatedOccupations.tsv'))
+  const relatedOccRels = relatedOccs.map(row => ({
+    from: `https://onet.org.ai/Occupations/${row.oNETSOCCode}`,
+    to: `https://onet.org.ai/Occupations/${row.relatedONETSOCCode}`,
+    predicate: 'relatedTo',
+    reverse: 'relatedTo',
+    tier: row.relatednessTier || '',
+    index: row.index || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.RelatedOccupations.tsv'), relatedOccRels)
+
+  // 26. Alternate Titles
+  const altTitles = parseTSV(path.join(onetDir, 'ONET.AlternateTitles.tsv'))
+  const altTitleRels = altTitles.map(row => ({
+    from: `https://onet.org.ai/Occupations/${row.oNETSOCCode}`,
+    to: toId(row.alternateTitle),
+    predicate: 'hasAlternateTitle',
+    reverse: 'alternateTitleOf',
+    alternateTitle: row.alternateTitle || '',
+    shortTitle: row.shortTitle || '',
+    source: row.source || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.AlternateTitles.tsv'), altTitleRels)
+
+  // 27. Sample Reported Titles
+  const reportedTitles = parseTSV(path.join(onetDir, 'ONET.SampleOfReportedTitles.tsv'))
+  const reportedTitleRels = reportedTitles.map(row => ({
+    from: `https://onet.org.ai/Occupations/${row.oNETSOCCode}`,
+    to: toId(row.reportedJobTitle),
+    predicate: 'hasReportedTitle',
+    reverse: 'reportedTitleOf',
+    reportedTitle: row.reportedJobTitle || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.ReportedTitles.tsv'), reportedTitleRels)
+
+  // 28. Education Training Experience
+  const eduExp = parseTSV(path.join(onetDir, 'ONET.EducationTrainingAndExperience.tsv'))
+  const eduExpRels = eduExp.map(row => ({
+    from: `https://onet.org.ai/Occupations/${row.oNETSOCCode}`,
+    to: `https://onet.org.ai/EducationLevels/${row.category}`,
+    predicate: 'hasEducationRequirement',
+    reverse: 'educationRequirementOf',
+    scaleId: row.scaleID || '',
+    category: row.category || '',
+    dataValue: row.dataValue || '',
+    n: row.n || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.Education.tsv'), eduExpRels)
+
+  // 29. Technology Skills (Occupation → Technology)
+  const techSkills = parseTSV(path.join(onetDir, 'ONET.TechnologySkills.tsv'))
+  const techRels = techSkills.map(row => ({
+    from: `https://onet.org.ai/Occupations/${row.oNETSOCCode}`,
+    to: `https://onet.org.ai/UNSPSCCommodities/${row.commodityCode}`,
+    predicate: 'usesTechnology',
+    reverse: 'usedByOccupation',
+    example: row.example || '',
+    hotTechnology: row.hotTechnology || '',
+    inDemand: row.inDemand || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.TechnologySkills.tsv'), techRels)
+
+  // 30. Tools Used (Occupation → Tool)
+  const toolsUsed = parseTSV(path.join(onetDir, 'ONET.ToolsUsed.tsv'))
+  const toolRels = toolsUsed.map(row => ({
+    from: `https://onet.org.ai/Occupations/${row.oNETSOCCode}`,
+    to: `https://onet.org.ai/UNSPSCCommodities/${row.commodityCode}`,
+    predicate: 'usesTool',
+    reverse: 'usedByOccupation',
+    example: row.example || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.ToolsUsed.tsv'), toolRels)
+
+  // 31. Tasks to DWAs
+  const tasksToDwas = parseTSV(path.join(onetDir, 'ONET.TasksToDWAs.tsv'))
+  const taskDwaRels = tasksToDwas.map(row => ({
+    from: `https://onet.org.ai/Tasks/${row.taskID}`,
+    to: `https://onet.org.ai/DetailedWorkActivities/${row.dWAID}`,
+    predicate: 'implementsActivity',
+    reverse: 'implementedByTask',
+    occupationCode: row.oNETSOCCode || '',
+  }))
+  writeTSV(path.join(relDir, 'Tasks.DetailedWorkActivities.tsv'), taskDwaRels)
+
+  // 32. Abilities to Work Activities
+  const abilitiesToWA = parseTSV(path.join(onetDir, 'ONET.AbilitiesToWorkActivities.tsv'))
+  const abilityWaRels = abilitiesToWA.map(row => ({
+    from: `https://onet.org.ai/Elements/${toId(row.abilitiesElementName)}`,
+    to: `https://onet.org.ai/Elements/${toId(row.workActivitiesElementName)}`,
+    predicate: 'enablesActivity',
+    reverse: 'requiresAbility',
+    abilityId: row.abilitiesElementID || '',
+    activityId: row.workActivitiesElementID || '',
+  }))
+  writeTSV(path.join(relDir, 'Abilities.WorkActivities.tsv'), abilityWaRels)
+
+  // 33. Abilities to Work Context
+  const abilitiesToWC = parseTSV(path.join(onetDir, 'ONET.AbilitiesToWorkContext.tsv'))
+  const abilityWcRels = abilitiesToWC.map(row => ({
+    from: `https://onet.org.ai/Elements/${toId(row.abilitiesElementName)}`,
+    to: `https://onet.org.ai/WorkContexts/${toId(row.workContextElementName)}`,
+    predicate: 'relevantToContext',
+    reverse: 'requiresAbility',
+    abilityId: row.abilitiesElementID || '',
+    contextId: row.workContextElementID || '',
+  }))
+  writeTSV(path.join(relDir, 'Abilities.WorkContexts.tsv'), abilityWcRels)
+
+  // 34. Skills to Work Activities
+  const skillsToWA = parseTSV(path.join(onetDir, 'ONET.SkillsToWorkActivities.tsv'))
+  const skillWaRels = skillsToWA.map(row => ({
+    from: `https://onet.org.ai/Elements/${toId(row.skillsElementName)}`,
+    to: `https://onet.org.ai/Elements/${toId(row.workActivitiesElementName)}`,
+    predicate: 'enablesActivity',
+    reverse: 'requiresSkill',
+    skillId: row.skillsElementID || '',
+    activityId: row.workActivitiesElementID || '',
+  }))
+  writeTSV(path.join(relDir, 'Skills.WorkActivities.tsv'), skillWaRels)
+
+  // 35. Skills to Work Context
+  const skillsToWC = parseTSV(path.join(onetDir, 'ONET.SkillsToWorkContext.tsv'))
+  const skillWcRels = skillsToWC.map(row => ({
+    from: `https://onet.org.ai/Elements/${toId(row.skillsElementName)}`,
+    to: `https://onet.org.ai/WorkContexts/${toId(row.workContextElementName)}`,
+    predicate: 'relevantToContext',
+    reverse: 'requiresSkill',
+    skillId: row.skillsElementID || '',
+    contextId: row.workContextElementID || '',
+  }))
+  writeTSV(path.join(relDir, 'Skills.WorkContexts.tsv'), skillWcRels)
+
+  // 36. Interests Illustrative Activities
+  const interestActivities = parseTSV(path.join(onetDir, 'ONET.InterestsIllustrativeActivities.tsv'))
+  const interestActRels = interestActivities.map(row => ({
+    from: `https://onet.org.ai/Elements/${toId(row.elementName)}`,
+    to: toId(row.illustrativeActivity),
+    predicate: 'hasIllustrativeActivity',
+    reverse: 'illustrativeActivityOf',
+    elementId: row.elementID || '',
+    activity: row.illustrativeActivity || '',
+  }))
+  writeTSV(path.join(relDir, 'Interests.Activities.tsv'), interestActRels)
+
+  // 37. Interests Illustrative Occupations
+  const interestOccs = parseTSV(path.join(onetDir, 'ONET.InterestsIllustrativeOccupations.tsv'))
+  const interestOccRels = interestOccs.map(row => ({
+    from: `https://onet.org.ai/Elements/${toId(row.elementName)}`,
+    to: `https://onet.org.ai/Occupations/${row.oNETSOCCode}`,
+    predicate: 'hasIllustrativeOccupation',
+    reverse: 'illustrativeOccupationOf',
+    elementId: row.elementID || '',
+  }))
+  writeTSV(path.join(relDir, 'Interests.Occupations.tsv'), interestOccRels)
+
+  // 38. Basic Interests to RIASEC
+  const basicInterests = parseTSV(path.join(onetDir, 'ONET.BasicInterestsToRIASEC.tsv'))
+  const basicInterestRels = basicInterests.map(row => ({
+    from: `https://onet.org.ai/Elements/${toId(row.elementName)}`,
+    to: `https://onet.org.ai/RIASEC/${row.rIASECAreaID}`,
+    predicate: 'belongsToRIASEC',
+    reverse: 'hasBasicInterest',
+    elementId: row.elementID || '',
+    riasecId: row.rIASECAreaID || '',
+  }))
+  writeTSV(path.join(relDir, 'BasicInterests.RIASEC.tsv'), basicInterestRels)
+
+  // 39. Occupation Level Metadata
+  const occMetadata = parseTSV(path.join(onetDir, 'ONET.OccupationLevelMetadata.tsv'))
+  const occMetaRels = occMetadata.map(row => ({
+    from: `https://onet.org.ai/Occupations/${row.oNETSOCCode}`,
+    to: row.item || '',
+    predicate: 'hasMetadata',
+    reverse: 'metadataOf',
+    item: row.item || '',
+    response: row.response || '',
+    n: row.n || '',
+    percent: row.percent || '',
+  }))
+  writeTSV(path.join(relDir, 'Occupations.Metadata.tsv'), occMetaRels)
 }
 
 // ============================================================================
@@ -133,29 +658,17 @@ function ingestNAICS(): void {
   const sourceFile = path.join(ROOT_DATA_DIR, 'Industries.tsv')
   const data = parseTSV(sourceFile)
 
-  // Group by hierarchy type
   const byType: Record<string, Record<string, string>[]> = {
-    Sectors: [],
-    Subsectors: [],
-    IndustryGroups: [],
-    Industries: [],
-    NationalIndustries: [],
+    Sectors: [], Subsectors: [], IndustryGroups: [], Industries: [], NationalIndustries: [],
   }
-
   const seenByType: Record<string, Set<string>> = {
-    Sectors: new Set(),
-    Subsectors: new Set(),
-    IndustryGroups: new Set(),
-    Industries: new Set(),
-    NationalIndustries: new Set(),
+    Sectors: new Set(), Subsectors: new Set(), IndustryGroups: new Set(), Industries: new Set(), NationalIndustries: new Set(),
   }
 
   for (const row of data) {
     const code = row.code || ''
     const type = getNAICSType(code)
     const id = row.id || ''
-
-    // Skip duplicates within type
     if (seenByType[type].has(id)) continue
     seenByType[type].add(id)
 
@@ -164,21 +677,18 @@ function ingestNAICS(): void {
       canonical: `https://naics.org.ai/${type}/${id}`,
       ns: 'standards.org.ai',
       type: type.replace(/s$/, ''),
-      id,
-      code,
+      id, code,
       name: row.name || '',
       description: row.description || '',
     })
   }
 
-  // Write each type file
   for (const [type, entities] of Object.entries(byType)) {
     if (entities.length > 0) {
       writeTSV(path.join(SOURCE_DIR, 'NAICS', `${type}.tsv`), entities)
     }
   }
 
-  // Ingest relationships
   const relFile = path.join(ROOT_DATA_DIR, 'Industries.Relationships.tsv')
   if (fs.existsSync(relFile)) {
     const relData = parseTSV(relFile)
@@ -210,27 +720,17 @@ function ingestAPQC(): void {
   const sourceFile = path.join(ROOT_DATA_DIR, 'Processes.tsv')
   const data = parseTSV(sourceFile)
 
-  // Group by hierarchy type
   const byType: Record<string, Record<string, string>[]> = {
-    Categories: [],
-    ProcessGroups: [],
-    Processes: [],
-    Activities: [],
+    Categories: [], ProcessGroups: [], Processes: [], Activities: [],
   }
-
   const seenByType: Record<string, Set<string>> = {
-    Categories: new Set(),
-    ProcessGroups: new Set(),
-    Processes: new Set(),
-    Activities: new Set(),
+    Categories: new Set(), ProcessGroups: new Set(), Processes: new Set(), Activities: new Set(),
   }
 
   for (const row of data) {
     const code = row.code || row.hierarchyId || ''
     const type = getAPQCType(code)
     const id = row.id || ''
-
-    // Skip duplicates within type
     if (seenByType[type].has(id)) continue
     seenByType[type].add(id)
 
@@ -239,8 +739,7 @@ function ingestAPQC(): void {
       canonical: `https://apqc.org.ai/${type}/${id}`,
       ns: 'standards.org.ai',
       type: type.replace(/s$/, ''),
-      id,
-      code,
+      id, code,
       pcfId: row.pcfId || '',
       name: row.name || '',
       description: row.description || '',
@@ -248,14 +747,12 @@ function ingestAPQC(): void {
     })
   }
 
-  // Write each type file
   for (const [type, entities] of Object.entries(byType)) {
     if (entities.length > 0) {
       writeTSV(path.join(SOURCE_DIR, 'APQC', `${type}.tsv`), entities)
     }
   }
 
-  // Ingest relationships
   const relFile = path.join(ROOT_DATA_DIR, 'Processes.Relationships.tsv')
   if (fs.existsSync(relFile)) {
     const relData = parseTSV(relFile)
@@ -273,46 +770,23 @@ function ingestAPQC(): void {
 // UNSPSC Hierarchy
 // ============================================================================
 
-function getUNSPSCType(code: string): string {
-  const cleanCode = code.replace(/[^0-9]/g, '')
-  if (cleanCode.length <= 2) return 'Segments'
-  if (cleanCode.length <= 4) return 'Families'
-  if (cleanCode.length <= 6) return 'Classes'
-  return 'Commodities'
-}
-
 function ingestUNSPSC(): void {
   console.log('\n📦 Ingesting UNSPSC...')
 
   const sourceFile = path.join(ROOT_DATA_DIR, 'Products.tsv')
   const data = parseTSV(sourceFile)
 
-  // Group by hierarchy type
   const byType: Record<string, Record<string, string>[]> = {
-    Segments: [],
-    Families: [],
-    Classes: [],
-    Commodities: [],
+    Segments: [], Families: [], Classes: [], Commodities: [],
   }
-
-  const seenByType: Record<string, Set<string>> = {
-    Segments: new Set(),
-    Families: new Set(),
-    Classes: new Set(),
-    Commodities: new Set(),
-  }
-
-  // Also extract hierarchy from segment/family/class columns
   const segmentSeen = new Set<string>()
   const familySeen = new Set<string>()
   const classSeen = new Set<string>()
+  const commoditySeen = new Set<string>()
 
   for (const row of data) {
-    const code = row.code || row.unspsc || ''
-    const type = getUNSPSCType(code)
     const id = row.id || ''
 
-    // Extract hierarchy entities
     if (row.segment && row.segmentCode && !segmentSeen.has(row.segmentCode)) {
       segmentSeen.add(row.segmentCode)
       byType.Segments.push({
@@ -354,31 +828,28 @@ function ingestUNSPSC(): void {
       })
     }
 
-    // Skip duplicates for commodities
-    if (seenByType.Commodities.has(id)) continue
-    seenByType.Commodities.add(id)
-
-    byType.Commodities.push({
-      url: `https://standards.org.ai/UNSPSC/Commodities/${id}`,
-      ns: 'standards.org.ai',
-      type: 'Commodity',
-      id,
-      code,
-      name: row.name || '',
-      description: row.description || '',
-      classCode: row.classCode || '',
-      digital: row.digital || '',
-    })
+    if (!commoditySeen.has(id)) {
+      commoditySeen.add(id)
+      byType.Commodities.push({
+        url: `https://standards.org.ai/UNSPSC/Commodities/${id}`,
+        ns: 'standards.org.ai',
+        type: 'Commodity',
+        id,
+        code: row.code || row.unspsc || '',
+        name: row.name || '',
+        description: row.description || '',
+        classCode: row.classCode || '',
+        digital: row.digital || '',
+      })
+    }
   }
 
-  // Write each type file
   for (const [type, entities] of Object.entries(byType)) {
     if (entities.length > 0) {
       writeTSV(path.join(SOURCE_DIR, 'UNSPSC', `${type}.tsv`), entities)
     }
   }
 
-  // Ingest relationships
   const relFile = path.join(ROOT_DATA_DIR, 'Products.Relationships.tsv')
   if (fs.existsSync(relFile)) {
     const relData = parseTSV(relFile)
@@ -411,29 +882,17 @@ function ingestNAPCS(): void {
   const sourceFile = path.join(ROOT_DATA_DIR, 'Services.tsv')
   const data = parseTSV(sourceFile)
 
-  // Group by hierarchy type
   const byType: Record<string, Record<string, string>[]> = {
-    Sections: [],
-    Subsections: [],
-    Groups: [],
-    Classes: [],
-    Subclasses: [],
+    Sections: [], Subsections: [], Groups: [], Classes: [], Subclasses: [],
   }
-
   const seenByType: Record<string, Set<string>> = {
-    Sections: new Set(),
-    Subsections: new Set(),
-    Groups: new Set(),
-    Classes: new Set(),
-    Subclasses: new Set(),
+    Sections: new Set(), Subsections: new Set(), Groups: new Set(), Classes: new Set(), Subclasses: new Set(),
   }
 
   for (const row of data) {
     const code = row.code || row.napcs || ''
     const type = getNAPCSType(code)
     const id = row.id || ''
-
-    // Skip duplicates within type
     if (seenByType[type].has(id)) continue
     seenByType[type].add(id)
 
@@ -441,22 +900,19 @@ function ingestNAPCS(): void {
       url: `https://standards.org.ai/NAPCS/${type}/${id}`,
       ns: 'standards.org.ai',
       type: type.replace(/s$/, ''),
-      id,
-      code,
+      id, code,
       name: row.name || '',
       description: row.description || '',
       digital: row.digital || '',
     })
   }
 
-  // Write each type file
   for (const [type, entities] of Object.entries(byType)) {
     if (entities.length > 0) {
       writeTSV(path.join(SOURCE_DIR, 'NAPCS', `${type}.tsv`), entities)
     }
   }
 
-  // Ingest relationships
   const relFile = path.join(ROOT_DATA_DIR, 'Services.Relationships.tsv')
   if (fs.existsSync(relFile)) {
     const relData = parseTSV(relFile)
@@ -467,107 +923,6 @@ function ingestNAPCS(): void {
       reverse: row.reverse || '',
     }))
     writeTSV(path.join(SOURCE_DIR, 'NAPCS', 'relationships', 'Hierarchy.tsv'), relationships)
-  }
-}
-
-// ============================================================================
-// ONET (flat hierarchy - already properly typed)
-// ============================================================================
-
-const ONET_MAPPINGS: Record<string, string> = {
-  'Occupations.tsv': 'Occupations',
-  'Skills.tsv': 'Skills',
-  'Knowledge.tsv': 'Knowledge',
-  'Abilities.tsv': 'Abilities',
-  'Tasks.tsv': 'Tasks',
-  'Activities.tsv': 'WorkActivities',
-}
-
-function ingestONET(): void {
-  console.log('\n👷 Ingesting ONET...')
-
-  for (const [filename, type] of Object.entries(ONET_MAPPINGS)) {
-    const sourceFile = path.join(ROOT_DATA_DIR, filename)
-    if (!fs.existsSync(sourceFile)) continue
-
-    const data = parseTSV(sourceFile)
-    const seen = new Set<string>()
-
-    const entities = data
-      .filter(row => {
-        const id = row.id || ''
-        if (seen.has(id)) return false
-        seen.add(id)
-        return true
-      })
-      .map(row => {
-        const id = row.id || ''
-        const result: Record<string, string> = {
-          url: `https://standards.org.ai/ONET/${type}/${id}`,
-          canonical: `https://onet.org.ai/${type}/${id}`,
-          ns: 'standards.org.ai',
-          type: type.replace(/s$/, ''),
-          id,
-          code: row.code || '',
-          name: row.name || '',
-          description: row.description || '',
-        }
-
-        // Preserve additional columns
-        for (const [key, value] of Object.entries(row)) {
-          if (!result[key] && value) {
-            result[key] = value
-          }
-        }
-
-        return result
-      })
-
-    writeTSV(path.join(SOURCE_DIR, 'ONET', `${type}.tsv`), entities)
-  }
-
-  // Ingest relationships
-  const relFile = path.join(ROOT_DATA_DIR, 'Occupations.Relationships.tsv')
-  if (fs.existsSync(relFile)) {
-    const relData = parseTSV(relFile)
-
-    // Group relationships by predicate type
-    const byPredicate: Record<string, Record<string, string>[]> = {}
-
-    for (const row of relData) {
-      const predicate = row.predicate || 'related'
-      if (!byPredicate[predicate]) {
-        byPredicate[predicate] = []
-      }
-      byPredicate[predicate].push({
-        from: row.from?.startsWith('https://') ? row.from : `https://${row.from}`,
-        to: row.to?.startsWith('https://') ? row.to : `https://${row.to}`,
-        predicate: row.predicate || '',
-        reverse: row.reverse || '',
-        level: row.level || '',
-        importance: row.importance || '',
-      })
-    }
-
-    // Write separate relationship files by type
-    const relDir = path.join(SOURCE_DIR, 'ONET', 'relationships')
-    ensureDir(relDir)
-
-    // Group by to-type for cleaner organization
-    const occupationRels = relData.filter(r =>
-      r.from?.includes('Occupation') || r.to?.includes('Occupation')
-    ).map(row => ({
-      from: row.from?.startsWith('https://') ? row.from : `https://${row.from}`,
-      to: row.to?.startsWith('https://') ? row.to : `https://${row.to}`,
-      predicate: row.predicate || '',
-      reverse: row.reverse || '',
-      level: row.level || '',
-      importance: row.importance || '',
-    }))
-
-    if (occupationRels.length > 0) {
-      writeTSV(path.join(relDir, 'Occupations.tsv'), occupationRels)
-    }
   }
 }
 
@@ -617,20 +972,20 @@ function ingestVerbs(): void {
 async function main() {
   console.log('📦 Source Data Ingestion')
   console.log('========================')
-  console.log(`Source: ${ROOT_DATA_DIR}`)
+  console.log(`Root Data: ${ROOT_DATA_DIR}`)
+  console.log(`Root Source: ${ROOT_SOURCE_DIR}`)
   console.log(`Output: ${SOURCE_DIR}`)
 
-  // Ensure source directories exist
   for (const dir of ['ONET', 'NAICS', 'APQC', 'UNSPSC', 'NAPCS', 'GS1']) {
     ensureDir(path.join(SOURCE_DIR, dir))
     ensureDir(path.join(SOURCE_DIR, dir, 'relationships'))
   }
 
+  ingestONET()
   ingestNAICS()
   ingestAPQC()
   ingestUNSPSC()
   ingestNAPCS()
-  ingestONET()
   ingestVerbs()
 
   console.log('\n✨ Source ingestion complete!')
