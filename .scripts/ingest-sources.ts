@@ -79,6 +79,17 @@ function toId(text: string | undefined): string {
   return text.replace(/[^\w\s-]/g, '').replace(/\s+/g, '')
 }
 
+/**
+ * Convert text to readable Wikipedia_style ID (with underscores)
+ */
+function toReadableId(text: string | undefined): string {
+  if (!text) return ''
+  return text
+    .replace(/[^\w\s-]/g, '') // Remove special chars except hyphen
+    .trim()
+    .replace(/\s+/g, '_') // Replace spaces with underscores
+}
+
 // ============================================================================
 // ONET Ingestion (41 files)
 // ============================================================================
@@ -665,12 +676,21 @@ function ingestNAICS(): void {
     Sectors: new Set(), Subsectors: new Set(), IndustryGroups: new Set(), Industries: new Set(), NationalIndustries: new Set(),
   }
 
+  // Build ID mapping for relationships
+  const oldIdToNewId = new Map<string, { id: string, type: string }>()
+
   for (const row of data) {
     const code = row.code || ''
     const type = getNAICSType(code)
-    const id = row.id || ''
-    if (seenByType[type].has(id)) continue
+    // Use readable ID from name
+    const id = toReadableId(row.name) || row.id || ''
+    if (!id || seenByType[type].has(id)) continue
     seenByType[type].add(id)
+
+    // Map old short ID to new ID and type
+    if (row.id) {
+      oldIdToNewId.set(row.id, { id, type })
+    }
 
     byType[type].push({
       url: `https://standards.org.ai/NAICS/${type}/${id}`,
@@ -689,15 +709,26 @@ function ingestNAICS(): void {
     }
   }
 
+  // Industries.Relationships.tsv has columns: ns, from, to, predicate, reverse
+  // from/to are short IDs like "Agriculture"
   const relFile = path.join(ROOT_DATA_DIR, 'Industries.Relationships.tsv')
   if (fs.existsSync(relFile)) {
     const relData = parseTSV(relFile)
-    const relationships = relData.map(row => ({
-      from: row.from?.startsWith('https://') ? row.from : `https://${row.from}`,
-      to: row.to?.startsWith('https://') ? row.to : `https://${row.to}`,
-      predicate: row.predicate || '',
-      reverse: row.reverse || '',
-    }))
+    const relationships = relData.map(row => {
+      const fromOldId = row.from || ''
+      const toOldId = row.to || ''
+
+      // Look up new ID and type
+      const fromInfo = oldIdToNewId.get(fromOldId) || { id: toReadableId(fromOldId), type: 'Industries' }
+      const toInfo = oldIdToNewId.get(toOldId) || { id: toReadableId(toOldId), type: 'Industries' }
+
+      return {
+        from: `https://standards.org.ai/NAICS/${fromInfo.type}/${fromInfo.id}`,
+        to: `https://standards.org.ai/NAICS/${toInfo.type}/${toInfo.id}`,
+        predicate: row.predicate || '',
+        reverse: row.reverse || '',
+      }
+    })
     writeTSV(path.join(SOURCE_DIR, 'NAICS', 'relationships', 'Hierarchy.tsv'), relationships)
   }
 }
@@ -727,12 +758,21 @@ function ingestAPQC(): void {
     Categories: new Set(), ProcessGroups: new Set(), Processes: new Set(), Activities: new Set(),
   }
 
+  // Build ID mapping for relationships
+  const oldIdToNewId = new Map<string, { id: string, type: string }>()
+
   for (const row of data) {
     const code = row.code || row.hierarchyId || ''
     const type = getAPQCType(code)
-    const id = row.id || ''
-    if (seenByType[type].has(id)) continue
+    // Use readable ID from name (APQC names are like "Develop Vision and Strategy")
+    const id = toReadableId(row.name) || row.id || ''
+    if (!id || seenByType[type].has(id)) continue
     seenByType[type].add(id)
+
+    // Map old ID to new
+    if (row.id) {
+      oldIdToNewId.set(row.id, { id, type })
+    }
 
     byType[type].push({
       url: `https://standards.org.ai/APQC/${type}/${id}`,
@@ -753,15 +793,23 @@ function ingestAPQC(): void {
     }
   }
 
+  // Processes.Relationships.tsv has columns: ns, from, to, predicate, reverse
+  // from/to are GraphDL IDs like "Companies.define.BusinessConceptVision"
   const relFile = path.join(ROOT_DATA_DIR, 'Processes.Relationships.tsv')
   if (fs.existsSync(relFile)) {
     const relData = parseTSV(relFile)
-    const relationships = relData.map(row => ({
-      from: row.from?.startsWith('https://') ? row.from : `https://${row.from}`,
-      to: row.to?.startsWith('https://') ? row.to : `https://${row.to}`,
-      predicate: row.predicate || '',
-      reverse: row.reverse || '',
-    }))
+    const relationships = relData.map(row => {
+      const fromId = row.from || ''
+      const toId = row.to || ''
+
+      // Build full URLs - these are Activity-level IDs (GraphDL format)
+      return {
+        from: `https://standards.org.ai/APQC/Activities/${fromId}`,
+        to: `https://standards.org.ai/APQC/Activities/${toId}`,
+        predicate: row.predicate || '',
+        reverse: row.reverse || '',
+      }
+    })
     writeTSV(path.join(SOURCE_DIR, 'APQC', 'relationships', 'Hierarchy.tsv'), relationships)
   }
 }
@@ -784,16 +832,26 @@ function ingestUNSPSC(): void {
   const classSeen = new Set<string>()
   const commoditySeen = new Set<string>()
 
+  // Note: The source Products.tsv has column misalignment (napcs column missing in data)
+  // So we extract name from the URL which contains the correct short identifier
   for (const row of data) {
-    const id = row.id || ''
+    // Extract short name from URL: https://unspsc.org.ai/Product/{shortName}
+    const urlMatch = row.url?.match(/\/Product\/(.+)$/)
+    const shortId = urlMatch ? urlMatch[1] : row.id || ''
+    // Convert to readable format with underscores (add _ where camelCase boundaries exist)
+    const commodityId = shortId.replace(/([a-z])([A-Z])/g, '$1_$2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+
+    // Extract the actual name from the URL path - convert to readable
+    const shortName = shortId.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
 
     if (row.segment && row.segmentCode && !segmentSeen.has(row.segmentCode)) {
       segmentSeen.add(row.segmentCode)
+      const segmentId = toReadableId(row.segment)
       byType.Segments.push({
-        url: `https://standards.org.ai/UNSPSC/Segments/${row.segment.replace(/\s+/g, '')}`,
+        url: `https://standards.org.ai/UNSPSC/Segments/${segmentId}`,
         ns: 'standards.org.ai',
         type: 'Segment',
-        id: row.segment.replace(/\s+/g, ''),
+        id: segmentId,
         code: row.segmentCode,
         name: row.segment,
         description: '',
@@ -802,11 +860,12 @@ function ingestUNSPSC(): void {
 
     if (row.family && row.familyCode && !familySeen.has(row.familyCode)) {
       familySeen.add(row.familyCode)
+      const familyId = toReadableId(row.family)
       byType.Families.push({
-        url: `https://standards.org.ai/UNSPSC/Families/${row.family.replace(/\s+/g, '')}`,
+        url: `https://standards.org.ai/UNSPSC/Families/${familyId}`,
         ns: 'standards.org.ai',
         type: 'Family',
-        id: row.family.replace(/\s+/g, ''),
+        id: familyId,
         code: row.familyCode,
         name: row.family,
         description: '',
@@ -816,11 +875,12 @@ function ingestUNSPSC(): void {
 
     if (row.class && row.classCode && !classSeen.has(row.classCode)) {
       classSeen.add(row.classCode)
+      const classId = toReadableId(row.class)
       byType.Classes.push({
-        url: `https://standards.org.ai/UNSPSC/Classes/${row.class.replace(/\s+/g, '')}`,
+        url: `https://standards.org.ai/UNSPSC/Classes/${classId}`,
         ns: 'standards.org.ai',
         type: 'Class',
-        id: row.class.replace(/\s+/g, ''),
+        id: classId,
         code: row.classCode,
         name: row.class,
         description: '',
@@ -828,15 +888,15 @@ function ingestUNSPSC(): void {
       })
     }
 
-    if (!commoditySeen.has(id)) {
-      commoditySeen.add(id)
+    if (commodityId && !commoditySeen.has(commodityId)) {
+      commoditySeen.add(commodityId)
       byType.Commodities.push({
-        url: `https://standards.org.ai/UNSPSC/Commodities/${id}`,
+        url: `https://standards.org.ai/UNSPSC/Commodities/${commodityId}`,
         ns: 'standards.org.ai',
         type: 'Commodity',
-        id,
-        code: row.code || row.unspsc || '',
-        name: row.name || '',
+        id: commodityId,
+        code: row.code || '',
+        name: shortName,
         description: row.description || '',
         classCode: row.classCode || '',
         digital: row.digital || '',
@@ -850,15 +910,51 @@ function ingestUNSPSC(): void {
     }
   }
 
+  // Build mappings for relationships:
+  // 1. classCode → class readable ID
+  // 2. normalized lowercase ID → entity ID
+  const classCodeToId = new Map<string, string>()
+  const oldIdToNewId = new Map<string, string>()
+
+  for (const row of data) {
+    if (row.classCode && row.class) {
+      classCodeToId.set(row.classCode, toReadableId(row.class))
+    }
+    // Map normalized (lowercase, no underscores) ID to entity ID
+    const urlMatch = row.url?.match(/\/Product\/(.+)$/)
+    const shortId = urlMatch ? urlMatch[1] : row.id || ''
+    // Create mapping key: lowercase without underscores
+    const normalizedKey = shortId.toLowerCase().replace(/_/g, '')
+    if (normalizedKey) {
+      // Map to the actual entity ID (which is already lowercase)
+      oldIdToNewId.set(normalizedKey, shortId)
+    }
+  }
+
   const relFile = path.join(ROOT_DATA_DIR, 'Products.Relationships.tsv')
   if (fs.existsSync(relFile)) {
     const relData = parseTSV(relFile)
-    const relationships = relData.map(row => ({
-      from: row.from?.startsWith('https://') ? row.from : `https://${row.from}`,
-      to: row.to?.startsWith('https://') ? row.to : `https://${row.to}`,
-      predicate: row.predicate || '',
-      reverse: row.reverse || '',
-    }))
+    const relationships = relData.map(row => {
+      // from: Normalize to lowercase without underscores to match entity IDs
+      const fromOldId = row.from || ''
+      // Normalize: lowercase and remove underscores to match entity IDs
+      const fromIdNormalized = fromOldId.toLowerCase().replace(/_/g, '')
+      const fromId = oldIdToNewId.get(fromIdNormalized) || fromIdNormalized
+      const fromUrl = `https://standards.org.ai/UNSPSC/Commodities/${fromId}`
+
+      // to: unspsc-class-{code} → lookup class readable ID
+      const toRaw = row.to || ''
+      const classCode = toRaw.replace('unspsc-class-', '')
+      const classId = classCodeToId.get(classCode) || classCode
+      const toUrl = `https://standards.org.ai/UNSPSC/Classes/${classId}`
+
+      return {
+        from: fromUrl,
+        to: toUrl,
+        predicate: row.predicate || '',
+        reverse: row.reverse || '',
+      }
+    })
     writeTSV(path.join(SOURCE_DIR, 'UNSPSC', 'relationships', 'Hierarchy.tsv'), relationships)
   }
 }
@@ -892,8 +988,9 @@ function ingestNAPCS(): void {
   for (const row of data) {
     const code = row.code || row.napcs || ''
     const type = getNAPCSType(code)
-    const id = row.id || ''
-    if (seenByType[type].has(id)) continue
+    // Use readable ID from name
+    const id = toReadableId(row.name) || row.id || ''
+    if (!id || seenByType[type].has(id)) continue
     seenByType[type].add(id)
 
     byType[type].push({
@@ -913,16 +1010,28 @@ function ingestNAPCS(): void {
     }
   }
 
+  // Services.Relationships.tsv has different columns: sourceUrl, relationshipType, targetUrl, targetType, confidence
   const relFile = path.join(ROOT_DATA_DIR, 'Services.Relationships.tsv')
   if (fs.existsSync(relFile)) {
     const relData = parseTSV(relFile)
-    const relationships = relData.map(row => ({
-      from: row.from?.startsWith('https://') ? row.from : `https://${row.from}`,
-      to: row.to?.startsWith('https://') ? row.to : `https://${row.to}`,
-      predicate: row.predicate || '',
-      reverse: row.reverse || '',
-    }))
-    writeTSV(path.join(SOURCE_DIR, 'NAPCS', 'relationships', 'Hierarchy.tsv'), relationships)
+    const relationships = relData.map(row => {
+      // sourceUrl and targetUrl are full URLs like https://napcs.org.ai/Service/...
+      const sourceUrl = row.sourceUrl || ''
+      const targetUrl = row.targetUrl || ''
+
+      // Transform to standards.org.ai URLs
+      const fromMatch = sourceUrl.match(/https:\/\/napcs\.org\.ai\/Service\/(.+)$/)
+      const fromId = fromMatch ? fromMatch[1] : toReadableId(sourceUrl)
+      const fromUrl = `https://standards.org.ai/NAPCS/Subclasses/${fromId}`
+
+      return {
+        from: fromUrl,
+        to: targetUrl, // Keep target URL as-is (points to nouns.org.ai, verbs.org.ai)
+        predicate: row.relationshipType || '',
+        reverse: '',
+      }
+    })
+    writeTSV(path.join(SOURCE_DIR, 'NAPCS', 'relationships', 'Relationships.tsv'), relationships)
   }
 }
 
