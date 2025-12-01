@@ -4,7 +4,7 @@
  * Source Data Ingestion Script
  *
  * ARCHITECTURE:
- *   .source/ = Faithful 1:1 translation of each external source file
+ *   .standards/ = Faithful 1:1 translation of each external source file
  *              with standard schema: url, ns, type, id, name, description, code + original columns
  *
  *   .data/   = Normalized/unified view (handled by generate-data.ts)
@@ -25,8 +25,8 @@ const __dirname = path.dirname(__filename)
 
 // Paths
 const ROOT_DATA_DIR = path.resolve(__dirname, '../../../.data')
-const ROOT_SOURCE_DIR = path.resolve(__dirname, '../../../.source')
-const SOURCE_DIR = path.resolve(__dirname, '../.source')
+const ROOT_SOURCE_DIR = path.resolve(__dirname, '../../../.standards')
+const SOURCE_DIR = path.resolve(__dirname, '../.standards')
 
 // ============================================================================
 // Utility Functions

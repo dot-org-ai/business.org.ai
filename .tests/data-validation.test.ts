@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-const SOURCE_DIR = path.resolve(__dirname, '../.source')
+const SOURCE_DIR = path.resolve(__dirname, '../.standards')
 const DATA_DIR = path.resolve(__dirname, '../.data')
 
 // ============================================================================
@@ -86,12 +86,12 @@ beforeAll(() => {
 })
 
 // ============================================================================
-// Source File Tests (.source/)
+// Source File Tests (.standards/)
 // ============================================================================
 
-describe('.source/ files validation', () => {
+describe('.standards/ files validation', () => {
   describe('Entity files', () => {
-    it('should have entity files in .source/', () => {
+    it('should have entity files in .standards/', () => {
       expect(sourceFiles.length).toBeGreaterThan(0)
     })
 

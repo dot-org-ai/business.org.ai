@@ -3,15 +3,15 @@
 /**
  * Business.org.ai Data Generation Script (Standalone)
  *
- * Generates business-related data files from local .source/ folder with:
+ * Generates business-related data files from local .standards/ folder with:
  * - Fully qualified https:// URLs
  * - canonical column mapping business.org.ai URLs to their canonical domains
  * - relationships in .data/relationships/ folder by from/to type
  *
  * This script is standalone and does not depend on the parent repo.
  * Source data structure:
- *   .source/[Standard]/[Type].tsv
- *   .source/[Standard]/relationships/[Name].tsv
+ *   .standards/[Standard]/[Type].tsv
+ *   .standards/[Standard]/relationships/[Name].tsv
  *
  * Standard hierarchies:
  *   NAICS: Sectors, Subsectors, IndustryGroups, Industries, NationalIndustries
@@ -28,8 +28,8 @@ import { fileURLToPath } from 'url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// Paths (standalone - reads from local .source/)
-const SOURCE_DIR = path.resolve(__dirname, '../.source')
+// Paths (standalone - reads from local .standards/)
+const SOURCE_DIR = path.resolve(__dirname, '../.standards')
 const OUTPUT_DATA_DIR = path.resolve(__dirname, '../.data')
 const OUTPUT_REL_DIR = path.resolve(__dirname, '../.data/relationships')
 
