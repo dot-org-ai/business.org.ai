@@ -84,6 +84,7 @@ function ensureDir(dirPath: string): void {
 function toReadableId(text: string | undefined): string {
   if (!text) return ''
   return text
+    .replace(/\//g, '_or_') // Convert / to implied "or"
     .replace(/[^\w\s-]/g, '') // Remove special chars except hyphen
     .trim()
     .replace(/\s+/g, '_') // Replace spaces with underscores
