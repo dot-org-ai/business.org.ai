@@ -24,8 +24,9 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 // Paths
-const ROOT_DATA_DIR = path.resolve(__dirname, '../../../.data')
-const ROOT_SOURCE_DIR = path.resolve(__dirname, '../../../.standards')
+// Source data from graph.org.ai
+const ROOT_DATA_DIR = path.resolve(__dirname, '../../graph.org.ai/.data')
+const ROOT_SOURCE_DIR = path.resolve(__dirname, '../../graph.org.ai/.source')
 const SOURCE_DIR = path.resolve(__dirname, '../.standards')
 
 // ============================================================================
@@ -79,15 +80,24 @@ function ensureDir(dirPath: string): void {
 }
 
 /**
- * Convert text to readable Wikipedia_style ID (with underscores)
+ * Convert text to PascalCase ID
+ * Used for: Occupations, Industries, Products, Services, Activities, etc.
  */
 function toReadableId(text: string | undefined): string {
   if (!text) return ''
-  return text
-    .replace(/\//g, '_or_') // Convert / to implied "or"
-    .replace(/[^\w\s-]/g, '') // Remove special chars except hyphen
+
+  const cleaned = text
+    .replace(/\//g, ' or ') // Convert / to "or"
+    .replace(/[^\w\s-]/g, '') // Remove special chars
+    .replace(/\s+/g, ' ')
     .trim()
-    .replace(/\s+/g, '_') // Replace spaces with underscores
+
+  const words = cleaned.split(/[\s_-]+/).filter(w => w.length > 0)
+  if (words.length === 0) return ''
+
+  return words.map(w =>
+    w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+  ).join('')
 }
 
 // ============================================================================

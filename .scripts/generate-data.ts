@@ -44,14 +44,16 @@ const OUTPUT_REL_DIR = path.resolve(__dirname, '../.data/relationships')
 // Types
 // ============================================================================
 
+/**
+ * Simplified entity schema
+ * URLs computed at runtime: https://{ns}/{id}
+ */
 interface EntityRow {
-  url: string
-  canonical: string
-  ns: string
-  type: string
-  id: string
-  code: string
-  name: string
+  ns: string      // Canonical namespace (e.g., products.org.ai)
+  type: string    // Entity type
+  id: string      // Wikipedia_Style_Names ID
+  code: string    // Numeric code if applicable
+  name: string    // Display name
   description: string
   [key: string]: string
 }
@@ -113,15 +115,50 @@ function normalizeToPascalCase(id: string): string {
 }
 
 /**
- * Convert text to Wikipedia_style ID
+ * Convert text to PascalCase ID (always joins without underscores)
+ * Used for: Occupations, Industries, Products, Services, Activities, etc.
+ */
+function toPascalCase(text: string): string {
+  if (!text) return ''
+
+  const cleaned = text
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const words = cleaned.split(/[\s_-]+/).filter(w => w.length > 0)
+  if (words.length === 0) return ''
+
+  return words.map(w =>
+    w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+  ).join('')
+}
+
+/**
+ * Convert text to Wikipedia_Style_Names ID (uses underscores for long names)
+ * Used for: Tasks (which are full sentence descriptions)
  */
 function toWikipediaStyle(text: string): string {
-  return text
-    .replace(/[^\w\s]/g, '') // Remove special chars
-    .split(/\s+/)
-    .filter(w => w.length > 0)
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join('_')
+  if (!text) return ''
+
+  const cleaned = text
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const words = cleaned.split(/[\s_-]+/).filter(w => w.length > 0)
+  if (words.length === 0) return ''
+
+  const capitalizedWords = words.map(w =>
+    w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+  )
+
+  // PascalCase for 1-3 words, Wikipedia_Style for 4+
+  if (words.length <= 3) {
+    return capitalizedWords.join('')
+  } else {
+    return capitalizedWords.join('_')
+  }
 }
 
 // ============================================================================
@@ -142,9 +179,7 @@ function generateIndustryHierarchy(): void {
     const singularType = naicsType.replace(/s$/, '').replace(/ie$/, 'y')
 
     const entities = sourceData.map(row => ({
-      url: `https://business.org.ai/${naicsType}/${row.id}`,
-      canonical: `https://industries.org.ai/${naicsType}/${row.id}`,
-      ns: 'business.org.ai',
+      ns: 'industries.org.ai',
       type: singularType,
       id: row.id || '',
       code: row.code || '',
@@ -199,15 +234,13 @@ function generateProcessHierarchy(): void {
     const singularType = apqcType.replace(/ies$/, 'y').replace(/s$/, '')
 
     const entities = sourceData.map(row => {
-      // Convert to Wikipedia_style ID
-      const wikiId = toWikipediaStyle(row.name || row.id || '')
+      // Convert to PascalCase ID
+      const id = toPascalCase(row.name || row.id || '')
 
       return {
-        url: `https://business.org.ai/${apqcType}/${wikiId}`,
-        canonical: `https://process.org.ai/${apqcType}/${wikiId}`,
-        ns: 'business.org.ai',
+        ns: 'process.org.ai',
         type: singularType,
-        id: wikiId,
+        id,
         code: row.code || row.pcfId || '',
         name: row.name || '',
         description: row.description || '',
@@ -262,9 +295,7 @@ function generateProductHierarchy(): void {
     const singularType = unspscType.replace(/ies$/, 'y').replace(/s$/, '')
 
     const entities = sourceData.map(row => ({
-      url: `https://business.org.ai/Products/${unspscType}/${row.id}`,
-      canonical: `https://products.org.ai/${unspscType}/${row.id}`,
-      ns: 'business.org.ai',
+      ns: 'products.org.ai',
       type: singularType,
       id: row.id || '',
       code: row.code || '',
@@ -320,9 +351,7 @@ function generateServiceHierarchy(): void {
     const singularType = napcsType.replace(/es$/, '').replace(/s$/, '')
 
     const entities = sourceData.map(row => ({
-      url: `https://business.org.ai/Services/${napcsType}/${row.id}`,
-      canonical: `https://services.org.ai/${napcsType}/${row.id}`,
-      ns: 'business.org.ai',
+      ns: 'services.org.ai',
       type: singularType,
       id: row.id || '',
       code: row.code || '',
@@ -385,9 +414,7 @@ function generateActivitiesHierarchy(): void {
 
     gwaElements.forEach(row => {
       activities.push({
-        url: `https://business.org.ai/Activities/${row.id}`,
-        canonical: `https://activities.org.ai/${row.id}`,
-        ns: 'business.org.ai',
+        ns: 'activities.org.ai',
         type: 'Activity',
         id: row.id || '',
         code: row.code || '',
@@ -429,9 +456,7 @@ function generateActivitiesHierarchy(): void {
 
     iwas.forEach(row => {
       activities.push({
-        url: `https://business.org.ai/Activities/${row.id}`,
-        canonical: `https://activities.org.ai/IWA/${row.id}`,
-        ns: 'business.org.ai',
+        ns: 'activities.org.ai',
         type: 'Activity',
         id: row.id || '',
         code: row.code || '',
@@ -470,9 +495,7 @@ function generateActivitiesHierarchy(): void {
 
     dwas.forEach(row => {
       activities.push({
-        url: `https://business.org.ai/Activities/${row.id}`,
-        canonical: `https://activities.org.ai/DWA/${row.id}`,
-        ns: 'business.org.ai',
+        ns: 'activities.org.ai',
         type: 'Activity',
         id: row.id || '',
         code: row.code || '',
@@ -654,9 +677,7 @@ function generateONETEntities(): void {
     const sourceData = parseTSV(sourceFile)
 
     const entities = sourceData.map(row => ({
-      url: `https://business.org.ai/${config.urlType}/${row.id}`,
-      canonical: `https://${config.domain}/${row.id}`,
-      ns: 'business.org.ai',
+      ns: config.domain,
       type: config.type,
       id: row.id || '',
       code: row.code || '',
@@ -807,9 +828,7 @@ function generateTasksActionsEvents(): void {
     const wikiTaskId = toWikipediaStyle(taskDescription)
     if (wikiTaskId && !taskMap.has(wikiTaskId)) {
       taskMap.set(wikiTaskId, {
-        url: `https://business.org.ai/Tasks/${wikiTaskId}`,
-        canonical: `https://tasks.org.ai/${wikiTaskId}`,
-        ns: 'business.org.ai',
+        ns: 'tasks.org.ai',
         type: 'Task',
         id: wikiTaskId,
         code: taskCode,
@@ -823,9 +842,7 @@ function generateTasksActionsEvents(): void {
       const occTaskId = `${occupationId}/${wikiTaskId}`
       if (!taskMap.has(occTaskId)) {
         taskMap.set(occTaskId, {
-          url: `https://business.org.ai/Tasks/${occTaskId}`,
-          canonical: `https://tasks.org.ai/${occTaskId}`,
-          ns: 'business.org.ai',
+          ns: 'tasks.org.ai',
           type: 'Task',
           id: occTaskId,
           code: taskCode,
@@ -848,9 +865,7 @@ function generateTasksActionsEvents(): void {
     const parsed = parseGraphDLId(graphdlId)
     if (parsed && !actionMap.has(graphdlId)) {
       actionMap.set(graphdlId, {
-        url: `https://business.org.ai/Actions/${graphdlId}`,
-        canonical: `https://actions.org.ai/${graphdlId}`,
-        ns: 'business.org.ai',
+        ns: 'actions.org.ai',
         type: 'Action',
         id: graphdlId,
         subject: parsed.subject,
@@ -886,9 +901,7 @@ function generateTasksActionsEvents(): void {
       const genericActionId = `${parsed.verb}.${parsed.object}${parsed.preposition ? '.' + parsed.preposition + '.' + parsed.prepObject : ''}`
       if (!actionMap.has(genericActionId)) {
         actionMap.set(genericActionId, {
-          url: `https://business.org.ai/Actions/${genericActionId}`,
-          canonical: `https://actions.org.ai/${genericActionId}`,
-          ns: 'business.org.ai',
+          ns: 'actions.org.ai',
           type: 'Action',
           id: genericActionId,
           subject: '',
@@ -908,9 +921,7 @@ function generateTasksActionsEvents(): void {
 
       if (!eventMap.has(eventId)) {
         eventMap.set(eventId, {
-          url: `https://business.org.ai/Events/${eventId}`,
-          canonical: `https://events.org.ai/${eventId}`,
-          ns: 'business.org.ai',
+          ns: 'events.org.ai',
           type: 'Event',
           id: eventId,
           object: parsed.object,
@@ -934,9 +945,7 @@ function generateTasksActionsEvents(): void {
         const prepEventId = `${parsed.prepObject}.${pastTense}`
         if (!eventMap.has(prepEventId)) {
           eventMap.set(prepEventId, {
-            url: `https://business.org.ai/Events/${prepEventId}`,
-            canonical: `https://events.org.ai/${prepEventId}`,
-            ns: 'business.org.ai',
+            ns: 'events.org.ai',
             type: 'Event',
             id: prepEventId,
             object: parsed.prepObject,

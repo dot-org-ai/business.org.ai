@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Business | org.ai</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="ontology.css">
+</head>
+<body>
+    <!-- MOBILE HEADER -->
+    <header class="mobile-header">
+        <a href="/" class="mobile-header-logo">
+            <img src="org-ai.svg" alt="org.ai logo">
+            <span>org.ai</span>
+        </a>
+        <button class="mobile-menu-btn" aria-label="Open menu">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+        </button>
+    </header>
+
+    <!-- MOBILE OVERLAY -->
+    <div class="mobile-overlay"></div>
+
+    <!-- LEFT SIDEBAR -->
+    <nav class="sidebar">
+        <button class="sidebar-close-btn" aria-label="Close menu">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+        </button>
+        <a href="/" class="sidebar-header">
+            <img src="org-ai.svg" alt="org.ai logo">
+            <span>org.ai</span>
+        </a>
+
+        <div class="sidebar-section">
+            <span class="sidebar-section-title">Core Entities</span>
+            <nav class="sidebar-nav">
+                <a href="/Business" class="sidebar-link active">Business</a>
+                <a href="/Product" class="sidebar-link">Product</a>
+                <a href="/Service" class="sidebar-link">Service</a>
+                <a href="/Brand" class="sidebar-link">Brand</a>
+                <a href="/Person" class="sidebar-link">Person</a>
+            </nav>
+        </div>
+
+        <div class="sidebar-section">
+            <span class="sidebar-section-title">Events</span>
+            <nav class="sidebar-nav">
+                <a href="/Event" class="sidebar-link">Event</a>
+                <a href="/Transaction" class="sidebar-link">Transaction</a>
+                <a href="/Workflow" class="sidebar-link">Workflow</a>
+            </nav>
+        </div>
+
+        <div class="sidebar-section">
+            <span class="sidebar-section-title">Resources</span>
+            <nav class="sidebar-nav">
+                <a href="/Document" class="sidebar-link">Document</a>
+                <a href="/Asset" class="sidebar-link">Asset</a>
+                <a href="/Location" class="sidebar-link">Location</a>
+            </nav>
+        </div>
+        
+    </nav>
+
+    <!-- MAIN CONTENT -->
+    <main class="content">
+        <h1>Business</h1>
+        <p>A business entity such as a company or organization that offers products or services to customers.</p>
+
+        <h2 id="properties">Properties</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Property</th>
+                    <th>Type</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>name</td><td>string</td><td>The name of the business.</td></tr>
+                <tr><td>description</td><td>string</td><td>A brief description of the business.</td></tr>
+                <tr><td>website</td><td>URL</td><td>The official website of the business.</td></tr>
+                <tr><td>industry</td><td>string</td><td>The industry sector the business operates in.</td></tr>
+                <tr><td>foundedDate</td><td>date</td><td>The date the business was founded.</td></tr>
+                <tr><td>employees</td><td>integer</td><td>The number of employees in the business.</td></tr>
+                <tr><td>headquarters</td><td>string</td><td>The location of the business's headquarters.</td></tr>
+                <tr><td>revenue</td><td>number</td><td>The annual revenue of the business.</td></tr>
+                <tr><td>logo</td><td>URL</td><td>The logo image of the business.</td></tr>
+            </tbody>
+        </table>
+
+        <h2 id="relationships">Relationships</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Relationship</th>
+                    <th>Target Type</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>hasProduct</td><td>Product</td><td>Products offered by the business.</td></tr>
+                <tr><td>hasService</td><td>Service</td><td>Services provided by the business.</td></tr>
+                <tr><td>hasBrand</td><td>Brand</td><td>Brands owned by the business.</td></tr>
+                <tr><td>hasSubsidiary</td><td>Business</td><td>Subsidiary companies owned by the business.</td></tr>
+                <tr><td>hasPartner</td><td>Business</td><td>Partner businesses associated with the business.</td></tr>
+            </tbody>
+        </table>
+
+        <h2 id="searches">Searches</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Search</th>
+                    <th>Parameters</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>OKRs</td><td>business: Business</td><td>Search for OKRs associated with the business.</td></tr>
+            </tbody>
+        </table>
+
+        <h2 id="actions">Actions</h2>
+        <table class="actions-table">
+            <thead>
+                <tr>
+                    <th>Action</th>
+                    <th>Object</th>
+                    <th>Result</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>launchProduct</td><td>Product</td><td>Event</td><td>Launch a new product.</td></tr>
+                <tr><td>offerService</td><td>Service</td><td>Event</td><td>Offer a new service.</td></tr>
+                <tr><td>rebrand</td><td>Brand</td><td>Event</td><td>Rebrand the business or a brand.</td></tr>
+                <tr><td>expandToMarket</td><td>string</td><td>Event</td><td>Expand business operations to a new market.</td></tr>
+                <tr><td>hireEmployee</td><td>Person</td><td>Event</td><td>Hire a new employee for the business.</td></tr>
+            </tbody>
+        </table>
+
+        <h2 id="events">Events</h2>
+        <table class="events-table">
+            <thead>
+                <tr>
+                    <th>Event</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>productLaunched</td><td>A new product has been launched by the business.</td></tr>
+                <tr><td>serviceOffered</td><td>A new service has been offered by the business.</td></tr>
+                <tr><td>businessRebranded</td><td>The business or a brand has been rebranded.</td></tr>
+                <tr><td>marketExpanded</td><td>The business has expanded operations to a new market.</td></tr>
+                <tr><td>employeeHired</td><td>A new employee has been hired by the business.</td></tr>
+            </tbody>
+        </table>
+    </main>
+
+    <!-- RIGHT TOC -->
+    <aside class="toc">
+        <span class="toc-title">On this page</span>
+        <nav class="toc-nav">
+            <a href="#properties" class="toc-link active">Properties</a>
+            <a href="#relationships" class="toc-link">Relationships</a>
+            <a href="#searches" class="toc-link">Searches</a>
+            <a href="#actions" class="toc-link">Actions</a>
+            <a href="#events" class="toc-link">Events</a>
+        </nav>
+
+        <div class="sidebar-ad">
+            <span class="sidebar-ad-badge">New</span>
+            <p class="sidebar-ad-headline">Upgrade to Pro</p>
+            <p class="sidebar-ad-description">Get access to advanced features and priority support.</p>
+            <a href="#" class="sidebar-ad-cta">Learn More</a>
+        </div>
+    </aside>
+
+    <!-- SCROLL SPY & MOBILE MENU -->
+    <script>
+        // Scroll spy for TOC
+        const tocLinks = document.querySelectorAll('.toc-link');
+        const sections = document.querySelectorAll('h2[id]');
+
+        function updateActiveLink() {
+            let current = '';
+            const scrollPos = window.scrollY + 150;
+
+            sections.forEach(section => {
+                if (section.offsetTop <= scrollPos) {
+                    current = section.getAttribute('id');
+                }
+            });
+
+            // If no section matched yet, use the first one
+            if (!current && sections.length > 0) {
+                current = sections[0].getAttribute('id');
+            }
+
+            tocLinks.forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === '#' + current) {
+                    link.classList.add('active');
+                }
+            });
+        }
+
+        window.addEventListener('scroll', updateActiveLink);
+        updateActiveLink();
+
+        // Mobile menu
+        const mobileMenuBtn = document.querySelector('.mobile-menu-btn');
+        const sidebarCloseBtn = document.querySelector('.sidebar-close-btn');
+        const sidebar = document.querySelector('.sidebar');
+        const mobileOverlay = document.querySelector('.mobile-overlay');
+
+        function openMenu() {
+            sidebar.classList.add('open');
+            mobileOverlay.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeMenu() {
+            sidebar.classList.remove('open');
+            mobileOverlay.classList.remove('active');
+            document.body.style.overflow = '';
+        }
+
+        mobileMenuBtn.addEventListener('click', openMenu);
+        sidebarCloseBtn.addEventListener('click', closeMenu);
+        mobileOverlay.addEventListener('click', closeMenu);
+
+        // Close menu when clicking a link
+        sidebar.querySelectorAll('.sidebar-link').forEach(link => {
+            link.addEventListener('click', closeMenu);
+        });
+    </script>
+</body>
+</html>
