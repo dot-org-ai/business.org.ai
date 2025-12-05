@@ -752,6 +752,69 @@ interface VerbData {
   noun: string // result noun
 }
 
+interface ParsedAction {
+  verb: string
+  object: string
+  preposition?: string
+  prepObject?: string
+}
+
+/**
+ * Generate past tense form of a verb
+ */
+function toPastTense(verb: string): string {
+  if (!verb) return ''
+  const v = verb.toLowerCase()
+  // Handle irregular verbs (add more as needed)
+  const irregulars: Record<string, string> = {
+    be: 'was', have: 'had', do: 'did', go: 'went', make: 'made',
+    say: 'said', get: 'got', take: 'took', see: 'saw', come: 'came',
+    know: 'knew', think: 'thought', give: 'gave', find: 'found',
+    tell: 'told', become: 'became', leave: 'left', put: 'put',
+    keep: 'kept', let: 'let', begin: 'began', show: 'showed',
+    hear: 'heard', run: 'ran', bring: 'brought', write: 'wrote',
+    sit: 'sat', stand: 'stood', lose: 'lost', pay: 'paid',
+    meet: 'met', set: 'set', learn: 'learned', lead: 'led',
+    understand: 'understood', hold: 'held', catch: 'caught',
+    choose: 'chose', draw: 'drew', drive: 'drove', eat: 'ate',
+    fall: 'fell', feel: 'felt', fly: 'flew', grow: 'grew',
+    read: 'read', rise: 'rose', sell: 'sold', send: 'sent',
+    spend: 'spent', teach: 'taught', throw: 'threw', wear: 'wore',
+    win: 'won', build: 'built', buy: 'bought', cut: 'cut',
+  }
+  if (irregulars[v]) return irregulars[v]
+  // Verbs ending in 'e' - just add 'd'
+  if (v.endsWith('e')) return v + 'd'
+  // Verbs ending in consonant + 'y' - change to 'ied'
+  if (v.endsWith('y') && !['a', 'e', 'i', 'o', 'u'].includes(v[v.length - 2])) {
+    return v.slice(0, -1) + 'ied'
+  }
+  // CVC pattern for short verbs: double final consonant
+  // But NOT if ending in w, x, y, or if second-to-last is also consonant
+  const vowels = ['a', 'e', 'i', 'o', 'u']
+  if (v.length >= 3) {
+    const last = v[v.length - 1]
+    const secondLast = v[v.length - 2]
+    const thirdLast = v[v.length - 3]
+    // If CVC pattern (consonant-vowel-consonant) and short word
+    if (!vowels.includes(last) && vowels.includes(secondLast) && !vowels.includes(thirdLast)) {
+      // Don't double w, x, y
+      if (!['w', 'x', 'y'].includes(last)) {
+        // Only double for short verbs (1 syllable typically)
+        if (v.length <= 4) {
+          return v + last + 'ed'
+        }
+        // For longer verbs ending in stressed syllable (like confer, prefer, occur)
+        if (['er', 'ur', 'it', 'et', 'ot', 'ut', 'at'].some(s => v.endsWith(s))) {
+          return v + last + 'ed'
+        }
+      }
+    }
+  }
+  // Default: add 'ed'
+  return v + 'ed'
+}
+
 /**
  * Load verb conjugation data
  */
@@ -762,15 +825,124 @@ function loadVerbs(): Map<string, VerbData> {
 
   verbs.forEach(v => {
     const id = v.id || v.verb || ''
+    const pastTense = v.pastTense || v.event || toPastTense(id)
     verbMap.set(id.toLowerCase(), {
       id,
-      event: v.pastTense || v.event || id + 'ed',
+      event: pastTense,
       activity: v.gerund || v.activity || id + 'ing',
       noun: v.noun || '',
     })
   })
 
   return verbMap
+}
+
+/**
+ * Split text on "and", "or", "," while respecting phrase boundaries
+ */
+function splitCompound(text: string): string[] {
+  if (!text) return []
+  // Remove parenthetical content
+  const cleaned = text.replace(/\([^)]+\)/g, '').trim()
+  // Split on conjunctions
+  const parts = cleaned.split(/\s*(?:,\s*(?:and|or)?|(?:\band\b|\bor\b))\s*/i)
+  return parts.map(p => p.trim()).filter(p => p.length > 0)
+}
+
+/**
+ * Parse a task description into verb-object pairs
+ * Example: "Direct or coordinate financial activities to fund operations"
+ * Returns: [{verb: "direct", object: "FinancialActivities"}, {verb: "coordinate", object: "FinancialActivities"}, ...]
+ */
+function parseTaskDescription(description: string, verbSet: Set<string>): ParsedAction[] {
+  const actions: ParsedAction[] = []
+  if (!description) return actions
+
+  // Normalize the description - remove possessives and special chars
+  const text = description
+    .toLowerCase()
+    .replace(/['']/g, '') // Remove apostrophes
+    .replace(/[^\w\s,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const words = text.split(' ')
+
+  // Find verb positions
+  const verbPositions: { verb: string; index: number }[] = []
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]
+    if (verbSet.has(word)) {
+      verbPositions.push({ verb: word, index: i })
+    }
+  }
+
+  if (verbPositions.length === 0) return actions
+
+  // Extract objects for each verb (text between this verb and next verb or end)
+  for (let i = 0; i < verbPositions.length; i++) {
+    const { verb, index } = verbPositions[i]
+    const nextIndex = i + 1 < verbPositions.length ? verbPositions[i + 1].index : words.length
+
+    // Get words between verb and next verb (the object phrase)
+    const objectWords = words.slice(index + 1, nextIndex)
+    if (objectWords.length === 0) continue
+
+    // Filter out articles and stop words from beginning
+    const stopWords = ['a', 'an', 'the', 'or', 'and', 'of', 'in', 'on', 'at', 's']
+    const filteredWords = objectWords.filter(w => !stopWords.includes(w) && w.length > 1)
+    if (filteredWords.length === 0) continue
+
+    // Check for preposition patterns (to, for, with, etc.)
+    const preps = ['to', 'for', 'with', 'in', 'on', 'by', 'from', 'using']
+    const prepIndex = filteredWords.findIndex(w => preps.includes(w))
+
+    let mainObject: string
+    let preposition: string | undefined
+    let prepObject: string | undefined
+
+    if (prepIndex > 0) {
+      // Split at preposition
+      const beforePrep = filteredWords.slice(0, prepIndex)
+      const afterPrep = filteredWords.slice(prepIndex + 1)
+
+      mainObject = beforePrep.join(' ')
+      preposition = filteredWords[prepIndex]
+      prepObject = afterPrep.length > 0 ? afterPrep.join(' ') : undefined
+    } else {
+      mainObject = filteredWords.join(' ')
+    }
+
+    // Handle compound objects (split on "and/or")
+    const mainObjects = splitCompound(mainObject)
+
+    // Create actions for each object
+    for (const obj of mainObjects) {
+      if (!obj || obj.length < 2) continue
+      const objId = toPascalCase(obj)
+      if (!objId) continue
+
+      // Only add preposition/prepObject if prepObject is defined and non-empty
+      if (prepObject && prepObject.trim().length > 0) {
+        const prepObjId = toPascalCase(prepObject)
+        if (prepObjId) {
+          actions.push({
+            verb,
+            object: objId,
+            preposition,
+            prepObject: prepObjId,
+          })
+        }
+      } else {
+        actions.push({
+          verb,
+          object: objId,
+        })
+      }
+    }
+  }
+
+  return actions
 }
 
 /**
@@ -797,7 +969,7 @@ function parseGraphDLId(id: string): { subject: string; verb: string; object: st
 
 /**
  * Generate Tasks with Wikipedia_style IDs
- * Also generates Actions and Events
+ * Also generates Actions and Events by parsing task descriptions
  */
 function generateTasksActionsEvents(): void {
   console.log('\n📋 Generating Tasks, Actions, and Events...')
@@ -805,6 +977,19 @@ function generateTasksActionsEvents(): void {
   const sourceFile = path.join(SOURCE_DIR, 'ONET', 'Tasks.tsv')
   const sourceData = parseTSV(sourceFile)
   const verbMap = loadVerbs()
+
+  // Create verb set for fast lookup
+  const verbSet = new Set(verbMap.keys())
+
+  // Load occupations to create code-to-ID lookup
+  const occupationsFile = path.join(SOURCE_DIR, 'ONET', 'Occupations.tsv')
+  const occupationsData = parseTSV(occupationsFile)
+  const occupationCodeToId = new Map<string, string>()
+  occupationsData.forEach(occ => {
+    if (occ.code && occ.id) {
+      occupationCodeToId.set(occ.code, occ.id)
+    }
+  })
 
   // Track unique entities
   const taskMap = new Map<string, any>()
@@ -820,9 +1005,11 @@ function generateTasksActionsEvents(): void {
   // Process each source task
   sourceData.forEach(row => {
     const taskDescription = row.name || row.description || ''
-    const graphdlId = row.id || ''
-    const occupationId = row.occupationTitle?.replace(/\s+/g, '') || ''
+    const occupationCode = row.occupationCode || ''
     const taskCode = row.taskId || row.code || ''
+
+    // Get occupation ID from code lookup
+    const occupationId = occupationCodeToId.get(occupationCode) || ''
 
     // 1. Create Wikipedia_style Task (from description)
     const wikiTaskId = toWikipediaStyle(taskDescription)
@@ -837,84 +1024,79 @@ function generateTasksActionsEvents(): void {
       })
     }
 
-    // Also create occupation-specific task variant
+    // Link occupation to task
     if (occupationId && wikiTaskId) {
-      const occTaskId = `${occupationId}/${wikiTaskId}`
-      if (!taskMap.has(occTaskId)) {
-        taskMap.set(occTaskId, {
-          ns: 'tasks.org.ai',
-          type: 'Task',
-          id: occTaskId,
-          code: taskCode,
-          name: taskDescription,
-          description: taskDescription,
-          occupation: occupationId,
-        })
-      }
-
-      // Link occupation to task
       occupationToTask.push({
-        from: `https://business.org.ai/Occupations/${occupationId}`,
-        to: `https://business.org.ai/Tasks/${wikiTaskId}`,
+        from: `https://occupations.org.ai/${occupationId}`,
+        to: `https://tasks.org.ai/${wikiTaskId}`,
         predicate: 'performs',
         reverse: 'performedBy',
       })
     }
 
-    // 2. Create Action (GraphDL semantic statement)
-    const parsed = parseGraphDLId(graphdlId)
-    if (parsed && !actionMap.has(graphdlId)) {
-      actionMap.set(graphdlId, {
-        ns: 'actions.org.ai',
-        type: 'Action',
-        id: graphdlId,
-        subject: parsed.subject,
-        verb: parsed.verb,
-        object: parsed.object,
-        preposition: parsed.preposition || '',
-        prepObject: parsed.prepObject || '',
-        name: taskDescription,
-        description: taskDescription,
-      })
+    // 2. Parse task description into semantic verb-object pairs
+    const parsedActions = parseTaskDescription(taskDescription, verbSet)
+
+    for (const parsed of parsedActions) {
+      // Create generic action ID: verb.Object or verb.Object.prep.PrepObject
+      const actionId = parsed.preposition && parsed.prepObject
+        ? `${parsed.verb}.${parsed.object}.${parsed.preposition}.${parsed.prepObject}`
+        : `${parsed.verb}.${parsed.object}`
+
+      if (!actionMap.has(actionId)) {
+        const prepPhrase = parsed.preposition && parsed.prepObject
+          ? ` ${parsed.preposition} ${parsed.prepObject}`
+          : ''
+        actionMap.set(actionId, {
+          ns: 'actions.org.ai',
+          type: 'Action',
+          id: actionId,
+          verb: parsed.verb,
+          object: parsed.object,
+          preposition: parsed.preposition || '',
+          prepObject: parsed.prepObject || '',
+          name: `${parsed.verb} ${parsed.object}${prepPhrase}`,
+          description: taskDescription,
+        })
+      }
 
       // Link task to action
       if (wikiTaskId) {
         taskToAction.push({
-          from: `https://business.org.ai/Tasks/${wikiTaskId}`,
-          to: `https://business.org.ai/Actions/${graphdlId}`,
+          from: `https://tasks.org.ai/${wikiTaskId}`,
+          to: `https://actions.org.ai/${actionId}`,
           predicate: 'hasAction',
           reverse: 'actionOf',
         })
       }
 
-      // Link occupation to action
+      // Link occupation to action (with subject)
       if (occupationId) {
+        const subjectActionId = `${occupationId}.${actionId}`
+        if (!actionMap.has(subjectActionId)) {
+          actionMap.set(subjectActionId, {
+            ns: 'actions.org.ai',
+            type: 'Action',
+            id: subjectActionId,
+            subject: occupationId,
+            verb: parsed.verb,
+            object: parsed.object,
+            preposition: parsed.preposition || '',
+            prepObject: parsed.prepObject || '',
+            name: `${occupationId} ${parsed.verb} ${parsed.object}`,
+            description: taskDescription,
+          })
+        }
+
         occupationToAction.push({
-          from: `https://business.org.ai/Occupations/${occupationId}`,
-          to: `https://business.org.ai/Actions/${graphdlId}`,
+          from: `https://occupations.org.ai/${occupationId}`,
+          to: `https://actions.org.ai/${actionId}`,
           predicate: 'performs',
           reverse: 'performedBy',
         })
       }
 
-      // Also create generic action (without subject)
-      const genericActionId = `${parsed.verb}.${parsed.object}${parsed.preposition ? '.' + parsed.preposition + '.' + parsed.prepObject : ''}`
-      if (!actionMap.has(genericActionId)) {
-        actionMap.set(genericActionId, {
-          ns: 'actions.org.ai',
-          type: 'Action',
-          id: genericActionId,
-          subject: '',
-          verb: parsed.verb,
-          object: parsed.object,
-          preposition: parsed.preposition || '',
-          prepObject: parsed.prepObject || '',
-          name: taskDescription,
-          description: taskDescription,
-        })
-      }
-
-      // 3. Create Event (Object.verbed)
+      // 3. Create Event (Object.pastTense)
       const verbData = verbMap.get(parsed.verb.toLowerCase())
       const pastTense = verbData?.event || parsed.verb + 'ed'
       const eventId = `${parsed.object}.${pastTense}`
@@ -934,8 +1116,8 @@ function generateTasksActionsEvents(): void {
 
       // Link action to event
       actionToEvent.push({
-        from: `https://business.org.ai/Actions/${graphdlId}`,
-        to: `https://business.org.ai/Events/${eventId}`,
+        from: `https://actions.org.ai/${actionId}`,
+        to: `https://events.org.ai/${eventId}`,
         predicate: 'produces',
         reverse: 'producedBy',
       })
