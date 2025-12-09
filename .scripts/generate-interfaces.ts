@@ -119,6 +119,51 @@ function toPascalCase(text: string): string {
 }
 
 /**
+ * Normalize entity names by removing common filler words
+ * E.g., "All Other Miscellaneous Wood Product Manufacturing" -> "Wood Product Manufacturing"
+ */
+function normalizeName(name: string): string {
+  if (!name) return ''
+
+  // Patterns to strip from the beginning
+  const prefixPatterns = [
+    /^all\s+other\s+/i,
+    /^other\s+/i,
+    /^miscellaneous\s+/i,
+    /^various\s+/i,
+    /^unclassified\s+/i,
+    /^general\s+/i,
+  ]
+
+  // Patterns to strip from the end
+  const suffixPatterns = [
+    /\s*,?\s*n\.?e\.?c\.?\s*$/i,  // n.e.c. = not elsewhere classified
+    /\s*,?\s*nec\s*$/i,
+    /\s*\(except[^)]*\)\s*$/i,
+    /\s*,?\s*except[^,]*$/i,
+  ]
+
+  let normalized = name
+
+  // Apply prefix patterns
+  for (const pattern of prefixPatterns) {
+    normalized = normalized.replace(pattern, '')
+  }
+
+  // Apply suffix patterns
+  for (const pattern of suffixPatterns) {
+    normalized = normalized.replace(pattern, '')
+  }
+
+  // Also strip "Miscellaneous" and "Other" from the middle
+  normalized = normalized
+    .replace(/\s+miscellaneous\s+/gi, ' ')
+    .replace(/\s+other\s+/gi, ' ')
+
+  return normalized.trim()
+}
+
+/**
  * Generate a short name (4-8 char abbreviation) for an entity
  */
 function toShortName(text: string): string {
@@ -203,52 +248,130 @@ function toPastTense(verb: string): string {
 // Work Domain Generation
 // ============================================================================
 
-function generateRoles(): AbstractRole[] {
+async function generateRoles(parser: GraphDLParser): Promise<AbstractRole[]> {
   console.log('\n👔 Generating Unified Roles...')
 
   const roles: AbstractRole[] = []
   const seen = new Set<string>()
 
+  // Helper to expand AND/OR in occupation names
+  function expandName(name: string): string[] {
+    const commonSuffixes = ['Supervisors', 'Specialists', 'Technicians', 'Workers', 'Operators', 'Managers', 'Assistants', 'Clerks', 'Instructors', 'Representatives', 'Attendants', 'Aides', 'Therapists']
+
+    // Find the common suffix
+    const words = name.split(/\s+/)
+    const lastWord = words[words.length - 1]
+    let suffix = ''
+    if (commonSuffixes.some(s => s.toLowerCase() === lastWord.toLowerCase())) {
+      suffix = lastWord
+    }
+
+    // First try comma-separated (with optional "and" before last item)
+    if (name.includes(',')) {
+      let parts = name.split(/\s*,\s*(?:and\s+)?/i)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+
+      // Distribute suffix if we have one
+      if (suffix && parts.length > 1) {
+        const lastPart = parts[parts.length - 1]
+        if (lastPart.toLowerCase().endsWith(suffix.toLowerCase())) {
+          parts[parts.length - 1] = lastPart.slice(0, -suffix.length).trim()
+        }
+
+        parts = parts.map(p => {
+          if (p.toLowerCase().endsWith(suffix.toLowerCase())) return p
+          return `${p} ${suffix}`
+        }).filter(p => p.length > suffix.length + 1)
+
+        return parts
+      }
+
+      const allShort = parts.every(p => p.split(/\s+/).length <= 4)
+      if (allShort && parts.length > 1) return parts
+    }
+
+    // Try slash-separated
+    if (name.includes('/')) {
+      const parts = name.split(/\s*\/\s*/)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+
+      const allShort = parts.every(p => p.split(/\s+/).length <= 3)
+      if (allShort && parts.length > 1) return parts
+    }
+
+    // Try "A and B" pattern with common suffix
+    if (name.includes(' and ') && suffix) {
+      const parts = name.split(/\s+and\s+/i)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+
+      if (parts.length >= 2) {
+        let lastPart = parts[parts.length - 1]
+        if (lastPart.toLowerCase().endsWith(suffix.toLowerCase())) {
+          lastPart = lastPart.slice(0, -suffix.length).trim()
+          parts[parts.length - 1] = lastPart
+        }
+
+        const expanded = parts.map(p => {
+          if (p.toLowerCase().endsWith(suffix.toLowerCase())) return p
+          return `${p} ${suffix}`
+        }).filter(p => p.length > suffix.length + 1)
+
+        if (expanded.every(p => p.split(/\s+/).length <= 5)) {
+          return expanded
+        }
+      }
+    }
+
+    return [name]
+  }
+
+  // Helper to add role
+  function addRole(
+    occ: Record<string, string>,
+    sourceType: string
+  ): void {
+    const rawName = occ.name || occ.id || ''
+    if (!rawName) return
+
+    // First normalize, then expand
+    const normalizedName = normalizeName(rawName)
+    const expandedNames = expandName(normalizedName)
+
+    for (const expandedName of expandedNames) {
+      // Apply normalization again
+      const finalName = normalizeName(expandedName)
+      const id = toPascalCase(finalName)
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+
+      roles.push({
+        ns: NAMESPACES.roles,
+        type: 'Role',
+        id,
+        name: finalName,
+        description: occ.description || '',
+        code: occ.code,
+        shortName: toShortName(finalName),
+        category: 'Occupation',
+        sourceType,
+        sourceCode: occ.code,
+      })
+    }
+  }
+
   // Load ONET Occupations from standards submodule
   const onetOccupations = parseTSV(path.join(STANDARDS_DIR, 'ONET.Occupations.tsv'))
   for (const occ of onetOccupations) {
-    const id = toPascalCase(occ.name || occ.id || '')
-    if (!id || seen.has(id)) continue
-    seen.add(id)
-
-    roles.push({
-      ns: NAMESPACES.roles,
-      type: 'Role',
-      id,
-      name: occ.name || '',
-      description: occ.description || '',
-      code: occ.code,
-      shortName: toShortName(occ.name || ''),
-      category: 'Occupation',
-      sourceType: 'ONETOccupation',
-      sourceCode: occ.code,
-    })
+    addRole(occ, 'ONETOccupation')
   }
 
   // Load BLS Occupations
   const blsOccupations = parseTSV(path.join(STANDARDS_DIR, 'BLS.Occupations.tsv'))
   for (const occ of blsOccupations) {
-    const id = toPascalCase(occ.name || occ.id || '')
-    if (!id || seen.has(id)) continue
-    seen.add(id)
-
-    roles.push({
-      ns: NAMESPACES.roles,
-      type: 'Role',
-      id,
-      name: occ.name || '',
-      description: occ.description || '',
-      code: occ.code,
-      shortName: toShortName(occ.name || ''),
-      category: 'Occupation',
-      sourceType: 'BLSOccupation',
-      sourceCode: occ.code,
-    })
+    addRole(occ, 'BLSOccupation')
   }
 
   console.log(`  📊 Generated ${roles.length} unified roles`)
@@ -505,29 +628,155 @@ async function generateActionsAndEvents(
 // Business Domain Generation
 // ============================================================================
 
-function generateIndustries(): AbstractIndustry[] {
+async function generateIndustries(parser: GraphDLParser): Promise<AbstractIndustry[]> {
   console.log('\n🏭 Generating Unified Industries...')
 
   const industries: AbstractIndustry[] = []
   const seen = new Set<string>()
 
+  // Helper to expand AND/OR in industry names
+  function expandName(name: string): string[] {
+    const commonSuffixes = ['Manufacturing', 'Services', 'Products', 'Trade', 'Wholesalers', 'Retailers', 'Production', 'Construction', 'Repair', 'Equipment', 'Supplies', 'Facilities']
+
+    // Find the common suffix (usually "Manufacturing", "Services", etc.)
+    const words = name.split(/\s+/)
+    const lastWord = words[words.length - 1]
+    let suffix = ''
+    if (commonSuffixes.some(s => s.toLowerCase() === lastWord.toLowerCase())) {
+      suffix = lastWord
+    }
+
+    // First try comma-separated (with optional "and" before last item)
+    if (name.includes(',')) {
+      // Split by comma and optional "and"
+      let parts = name.split(/\s*,\s*(?:and\s+)?/i)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+
+      // If we have a suffix and multiple parts, distribute the suffix
+      if (suffix && parts.length > 1) {
+        // Remove the suffix from the last part if it has it
+        const lastPart = parts[parts.length - 1]
+        if (lastPart.toLowerCase().endsWith(suffix.toLowerCase())) {
+          parts[parts.length - 1] = lastPart.slice(0, -suffix.length).trim()
+        }
+
+        // Add suffix to parts that don't have it
+        parts = parts.map(p => {
+          if (p.toLowerCase().endsWith(suffix.toLowerCase())) {
+            return p
+          }
+          return `${p} ${suffix}`
+        }).filter(p => p.length > suffix.length + 1)
+
+        return parts
+      }
+
+      // Only expand if parts are reasonably short (3 words max per part)
+      const allShort = parts.every(p => p.split(/\s+/).length <= 3)
+      if (allShort && parts.length > 1) return parts
+    }
+
+    // Try slash-separated (e.g., "Audio/Visual" -> ["Audio", "Visual"])
+    if (name.includes('/')) {
+      const parts = name.split(/\s*\/\s*/)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+
+      const allShort = parts.every(p => p.split(/\s+/).length <= 3)
+      if (allShort && parts.length > 1) return parts
+    }
+
+    // Try splitting on multiple "and"s with common suffix
+    // E.g., "Air Conditioning and Warm Air Heating Equipment and Commercial Refrigeration Equipment Manufacturing"
+    if (name.includes(' and ') && suffix) {
+      // Split on " and " boundaries
+      const parts = name.split(/\s+and\s+/i)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+
+      if (parts.length >= 2) {
+        // Remove suffix from last part
+        let lastPart = parts[parts.length - 1]
+        if (lastPart.toLowerCase().endsWith(suffix.toLowerCase())) {
+          lastPart = lastPart.slice(0, -suffix.length).trim()
+          parts[parts.length - 1] = lastPart
+        }
+
+        // Distribute suffix to all parts
+        const expanded = parts.map(p => {
+          if (p.toLowerCase().endsWith(suffix.toLowerCase())) {
+            return p
+          }
+          return `${p} ${suffix}`
+        }).filter(p => p.length > suffix.length + 1)
+
+        // Only use if each part is reasonable length
+        if (expanded.every(p => p.split(/\s+/).length <= 5)) {
+          return expanded
+        }
+      }
+    }
+
+    // Try "A and B" pattern without commas (for shorter cases)
+    const andMatch = name.match(/^(.+?)\s+and\s+(.+)$/i)
+    if (andMatch) {
+      const [, before, after] = andMatch
+
+      // Check if there's a common suffix (last word of 'after')
+      const afterWords = after.trim().split(/\s+/)
+      if (afterWords.length >= 2 && suffix) {
+        // If "before" doesn't already end with the suffix, create expanded versions
+        if (!before.toLowerCase().endsWith(suffix.toLowerCase())) {
+          const part1 = `${before} ${suffix}`
+          const part2 = after
+
+          // Only expand if both parts are reasonably short
+          if (part1.split(/\s+/).length <= 5 && part2.split(/\s+/).length <= 5) {
+            return [part1, part2]
+          }
+        }
+      }
+
+      // Simple "A and B" split if both parts are short
+      const beforeShort = before.split(/\s+/).length <= 3
+      const afterShort = after.split(/\s+/).length <= 3
+      if (beforeShort && afterShort) {
+        return [before, after]
+      }
+    }
+
+    return [name]
+  }
+
   // Helper to add industry from any NAICS level
   function addIndustry(item: Record<string, string>, level: number): void {
-    const id = toPascalCase(item.name || item.id || '')
-    if (!id || seen.has(id)) return
-    seen.add(id)
+    const name = item.name || item.id || ''
+    if (!name) return
 
-    industries.push({
-      ns: NAMESPACES.industries,
-      type: 'Industry',
-      id,
-      name: item.name || '',
-      description: item.description || '',
-      code: item.code,
-      shortName: toShortName(item.name || ''),
-      sourceType: 'NAICS',
-      level,
-    })
+    // First normalize, then expand
+    const normalizedName = normalizeName(name)
+    const expandedNames = expandName(normalizedName)
+
+    for (const expandedName of expandedNames) {
+      // Apply normalization again to each expanded name
+      const finalName = normalizeName(expandedName)
+      const id = toPascalCase(finalName)
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+
+      industries.push({
+        ns: NAMESPACES.industries,
+        type: 'Industry',
+        id,
+        name: finalName,
+        description: item.description || '',
+        code: item.code,
+        shortName: toShortName(finalName),
+        sourceType: 'NAICS',
+        level,
+      })
+    }
   }
 
   // Load all NAICS levels - each is still just an "Industry"
@@ -593,29 +842,107 @@ function generateProcesses(): AbstractProcess[] {
   return processes
 }
 
-function generateProducts(): AbstractProduct[] {
+async function generateProducts(parser: GraphDLParser): Promise<AbstractProduct[]> {
   console.log('\n📦 Generating Unified Products...')
 
   const products: AbstractProduct[] = []
   const seen = new Set<string>()
 
+  // Helper to expand AND/OR in product names
+  function expandName(name: string): string[] {
+    // First, clean up the name by simplifying parenthetical content
+    // "Vegetables (Non Leaf) - Unprepared/Unprocessed (Fresh)"
+    // → "Vegetables Non Leaf - Unprepared/Unprocessed Fresh"
+    let cleanName = name
+      .replace(/\s*\(([^)]+)\)\s*/g, ' $1 ')  // Remove parens but keep content
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    // Handle hyphen-separated sections: "X - Y/Z" → expand Y/Z
+    if (cleanName.includes(' - ')) {
+      const parts = cleanName.split(/\s+-\s+/)
+      if (parts.length >= 2) {
+        // Get the base (before hyphen) and modifiers (after hyphen)
+        const base = parts[0].trim()
+        const modifierSection = parts.slice(1).join(' ').trim()
+
+        // Expand slashes in the modifier section
+        if (modifierSection.includes('/')) {
+          const modifiers = modifierSection.split(/\s*\/\s*/)
+            .map(m => m.trim())
+            .filter(m => m.length > 0)
+
+          if (modifiers.length > 1) {
+            // Create combinations: base + each modifier
+            return modifiers.map(m => `${base} ${m}`)
+          }
+        }
+
+        // If no slash expansion, just combine
+        return [`${base} ${modifierSection}`]
+      }
+    }
+
+    // Try comma-separated (with optional "and" before last item)
+    if (cleanName.includes(',')) {
+      const parts = cleanName.split(/\s*,\s*(?:and\s+)?/i)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+
+      const allShort = parts.every(p => p.split(/\s+/).length <= 4)
+      if (allShort && parts.length > 1) return parts
+    }
+
+    // Try slash-separated (for simple cases without hyphen)
+    if (cleanName.includes('/')) {
+      const parts = cleanName.split(/\s*\/\s*/)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+
+      const allShort = parts.every(p => p.split(/\s+/).length <= 4)
+      if (allShort && parts.length > 1) return parts
+    }
+
+    return [cleanName]
+  }
+
   // Helper to add product from any source
   function addProduct(item: Record<string, string>, source: string, level: number): void {
-    const id = toPascalCase(item.name || item.id || '')
-    if (!id || seen.has(id)) return
-    seen.add(id)
+    let name = item.name || item.id || ''
+    if (!name) return
 
-    products.push({
-      ns: NAMESPACES.products,
-      type: 'Product',
-      id,
-      name: item.name || '',
-      description: item.description || '',
-      code: item.code,
-      shortName: toShortName(item.name || ''),
-      sourceType: source,
-      level,
-    })
+    // Skip items where name appears to be a description (too long)
+    // This handles GS1 data quality issues where descriptions are in the name field
+    if (name.length > 100) {
+      // Try using the sameAs field as the actual name (GS1 has short names there)
+      if (item.sameAs && item.sameAs.length > 0 && item.sameAs.length < 100) {
+        name = item.sameAs
+      } else {
+        // Skip entirely - this is bad data
+        return
+      }
+    }
+
+    // Expand AND/OR in names
+    const expandedNames = expandName(name)
+
+    for (const expandedName of expandedNames) {
+      const id = toPascalCase(expandedName)
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+
+      products.push({
+        ns: NAMESPACES.products,
+        type: 'Product',
+        id,
+        name: expandedName,
+        description: item.description || '',
+        code: item.code,
+        shortName: toShortName(expandedName),
+        sourceType: source,
+        level,
+      })
+    }
   }
 
   // GS1 GPC hierarchy (focused on retail/consumer products)
@@ -649,7 +976,7 @@ function generateProducts(): AbstractProduct[] {
   return products
 }
 
-function generateServices(): AbstractService[] {
+async function generateServices(parser: GraphDLParser): Promise<AbstractService[]> {
   console.log('\n🛎️ Generating Unified Services...')
 
   const services: AbstractService[] = []
@@ -661,23 +988,55 @@ function generateServices(): AbstractService[] {
     return numCode >= 500
   }
 
+  // Helper to expand AND/OR in service names
+  function expandName(name: string): string[] {
+    // First try comma-separated (with optional "and" before last item)
+    if (name.includes(',')) {
+      const parts = name.split(/\s*,\s*(?:and\s+)?/i)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+
+      const allShort = parts.every(p => p.split(/\s+/).length <= 3)
+      if (allShort && parts.length > 1) return parts
+    }
+
+    // Try slash-separated
+    if (name.includes('/')) {
+      const parts = name.split(/\s*\/\s*/)
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+
+      const allShort = parts.every(p => p.split(/\s+/).length <= 3)
+      if (allShort && parts.length > 1) return parts
+    }
+
+    return [name]
+  }
+
   // Helper to add service
   function addService(item: Record<string, string>, source: string, level: number): void {
-    const id = toPascalCase(item.name || item.id || '')
-    if (!id || seen.has(id)) return
-    seen.add(id)
+    const name = item.name || item.id || ''
+    if (!name) return
 
-    services.push({
-      ns: NAMESPACES.services,
-      type: 'Service',
-      id,
-      name: item.name || '',
-      description: item.description || '',
-      code: item.code,
-      shortName: toShortName(item.name || ''),
-      sourceType: source,
-      level,
-    })
+    const expandedNames = expandName(name)
+
+    for (const expandedName of expandedNames) {
+      const id = toPascalCase(expandedName)
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+
+      services.push({
+        ns: NAMESPACES.services,
+        type: 'Service',
+        id,
+        name: expandedName,
+        description: item.description || '',
+        code: item.code,
+        shortName: toShortName(expandedName),
+        sourceType: source,
+        level,
+      })
+    }
   }
 
   // NAPCS Groups - only service categories (code >= 500)
@@ -809,7 +1168,7 @@ async function main(): Promise<void> {
   console.log('\n📊 Work Domain')
   console.log('─'.repeat(50))
 
-  const roles = generateRoles()
+  const roles = await generateRoles(parser)
   const competencies = generateCompetencies()
   const tasks = await generateTasks(parser)
   const { actions, events, taskActionRels, actionEventRels } =
@@ -828,10 +1187,10 @@ async function main(): Promise<void> {
   console.log('\n📊 Business Domain')
   console.log('─'.repeat(50))
 
-  const industries = generateIndustries()
+  const industries = await generateIndustries(parser)
   const processes = generateProcesses()
-  const products = generateProducts()
-  const services = generateServices()
+  const products = await generateProducts(parser)
+  const services = await generateServices(parser)
 
   writeTSV(path.join(OUTPUT_DIR, 'Industries.tsv'), industries.map(entityToRecord))
   writeTSV(path.join(OUTPUT_DIR, 'Processes.tsv'), processes.map(entityToRecord))

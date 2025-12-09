@@ -19,6 +19,7 @@ export interface Entity {
   name: string // Display name
   description: string // Full description
   code?: string // Standard code (e.g., "11-1011.00")
+  shortName?: string // Short abbreviation (4-8 chars) for compact displays
 }
 
 /**
@@ -98,6 +99,7 @@ export interface AbstractAction extends Entity {
   object: string
   preposition?: string
   prepObject?: string
+  source?: string // Original source text for debugging
   // Derived from tasks
   sourceTaskIds?: string[]
 }
@@ -110,6 +112,7 @@ export interface AbstractEvent extends Entity {
   pastTense: string
   verb: string
   object: string
+  source?: string // Original source text for debugging
   // Links to actions
   sourceActionId?: string
 }
@@ -123,7 +126,7 @@ export interface AbstractEvent extends Entity {
  */
 export interface AbstractIndustry extends HierarchicalEntity {
   type: 'Industry'
-  category: 'Sector' | 'Subsector' | 'Group' | 'Industry' | 'SubIndustry'
+  category?: 'Sector' | 'Subsector' | 'Group' | 'Industry' | 'SubIndustry'
   sourceType: string // NAICS, SIC, GICS, etc.
   sourceCode?: string
   // Unified attributes
@@ -135,7 +138,7 @@ export interface AbstractIndustry extends HierarchicalEntity {
  */
 export interface AbstractProcess extends HierarchicalEntity {
   type: 'Process'
-  category: 'Category' | 'Group' | 'Process' | 'Activity'
+  category?: 'Category' | 'Group' | 'Process' | 'Activity'
   sourceType: string
   // Unified attributes
   processArea?: string
@@ -151,7 +154,7 @@ export interface AbstractProcess extends HierarchicalEntity {
  */
 export interface AbstractProduct extends HierarchicalEntity {
   type: 'Product'
-  category: 'Segment' | 'Family' | 'Class' | 'Commodity' | 'Item'
+  category?: 'Segment' | 'Family' | 'Class' | 'Commodity' | 'Item'
   sourceType: string
   // Unified attributes
   isDigital?: boolean
@@ -163,7 +166,7 @@ export interface AbstractProduct extends HierarchicalEntity {
  */
 export interface AbstractService extends HierarchicalEntity {
   type: 'Service'
-  category: 'Section' | 'Division' | 'Group' | 'Class' | 'Subclass'
+  category?: 'Section' | 'Division' | 'Group' | 'Class' | 'Subclass'
   sourceType: string
   // Unified attributes
   isDigital?: boolean
