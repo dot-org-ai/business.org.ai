@@ -8,7 +8,7 @@
  * - Mermaid diagrams (flowchart, sequence, state, ER)
  */
 
-import { AI } from 'mdxai'
+import { AI } from 'ai-functions'
 import { ensureConfigured } from './config'
 import type { Process, Task } from '../ontology'
 import type {

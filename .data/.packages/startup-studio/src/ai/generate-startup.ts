@@ -9,7 +9,7 @@
  * Then scores and ranks for viability.
  */
 
-import { AI } from 'mdxai'
+import { AI } from 'ai-functions'
 import { ensureConfigured } from './config'
 import type { Hypothesis } from '../hypothesis'
 import type { Industry, Occupation, Process, Task } from '../ontology'

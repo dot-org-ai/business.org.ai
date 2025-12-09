@@ -1,23 +1,19 @@
 /**
  * AI Configuration for Startup Studio
  *
- * Uses mdxai which re-exports ai-functions and provides:
- * - Unified $ context with database, AI, workflows
- * - Persistent function storage
- * - Experiment tracking
- * - MCP server integration
+ * Uses ai-functions for AI generation capabilities.
  */
 
-// Re-export from mdxai for convenience
+// Re-export from ai-functions for convenience
 export {
   AI,
   ai,
   generateObject,
   generateText,
   configure,
-  createFsDatabase,
-  model,
-} from 'mdxai'
+} from 'ai-functions'
+
+export { model } from 'ai-providers'
 
 export interface AIConfig {
   provider?: 'bedrock' | 'openai' | 'anthropic'
@@ -37,7 +33,7 @@ let isConfigured = false
  * Configure AI for Startup Studio
  */
 export async function configureAI(options: AIConfig = {}): Promise<void> {
-  const { configure } = await import('mdxai')
+  const { configure } = await import('ai-functions')
 
   const config = { ...DEFAULT_CONFIG, ...options }
 

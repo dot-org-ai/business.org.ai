@@ -8,7 +8,7 @@
  * - Repeatable process
  */
 
-import { AI } from 'mdxai'
+import { AI } from 'ai-functions'
 import { ensureConfigured } from './config'
 import type { StartupConcept } from '../startup'
 import type { ProductizedService, ServicePattern, ServiceTemplate } from '../productized-service'

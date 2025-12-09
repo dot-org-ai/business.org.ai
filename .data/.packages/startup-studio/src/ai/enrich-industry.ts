@@ -9,7 +9,7 @@
  * - AI opportunities
  */
 
-import { AI } from 'mdxai'
+import { AI } from 'ai-functions'
 import { ensureConfigured } from './config'
 import type { Industry } from '../ontology'
 import type { EnrichedIndustry, BusinessType, BusinessModelCanvas, IndustryTrend, CompetitiveLandscape } from '../enrichments'

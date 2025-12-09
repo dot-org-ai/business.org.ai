@@ -40,7 +40,8 @@
   "author": "Startups.Studio",
   "license": "MIT",
   "dependencies": {
-    "mdxai": "workspace:*",
+    "ai-functions": "workspace:*",
+    "ai-providers": "workspace:*",
     "dotenv": "^16.3.0",
     "zod": "^3.22.0"
   },

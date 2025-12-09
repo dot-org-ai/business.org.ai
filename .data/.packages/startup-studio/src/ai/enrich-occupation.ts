@@ -9,7 +9,7 @@
  * - Messaging hooks for marketing
  */
 
-import { AI } from 'mdxai'
+import { AI } from 'ai-functions'
 import { ensureConfigured } from './config'
 import type { Occupation } from '../ontology'
 import type {
