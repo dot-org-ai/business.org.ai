@@ -1,6 +1,22 @@
 {
-    "devDependencies": {
-        "@types/node": "^24.10.1",
-        "vitest": "^4.0.14"
-    }
+  "name": "business.org.ai",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Unified business ontology from industry standards",
+  "scripts": {
+    "ingest:graph": "tsx .scripts/ingest-sources.ts",
+    "ingest:standards": "tsx .scripts/ingest-standards.ts",
+    "generate:data": "tsx .scripts/generate-data.ts",
+    "generate:interfaces": "tsx .scripts/generate-interfaces.ts",
+    "build": "npm run ingest:standards && npm run generate:interfaces",
+    "build:all": "npm run ingest:graph && npm run generate:data && npm run ingest:standards && npm run generate:interfaces",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.0.14"
+  }
 }
