@@ -1,0 +1,54 @@
+{
+  "name": "startup-studio",
+  "version": "0.1.0",
+  "description": "Type system and workflow for programmatic startup generation",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./ai": {
+      "types": "./dist/ai/index.d.ts",
+      "import": "./dist/ai/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/ai/index.ts --format esm --dts",
+    "dev": "tsup src/index.ts src/ai/index.ts --format esm --dts --watch",
+    "test": "vitest",
+    "test:enrich": "tsx test/enrich-sample.ts",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "startup",
+    "business",
+    "ai",
+    "agents",
+    "ontology",
+    "generation",
+    "validation",
+    "experiments"
+  ],
+  "author": "Startups.Studio",
+  "license": "MIT",
+  "dependencies": {
+    "mdxai": "workspace:*",
+    "dotenv": "^16.3.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  }
+}

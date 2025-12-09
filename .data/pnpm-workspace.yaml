@@ -1,0 +1,13 @@
+packages:
+  # Startup Studio packages
+  - '.packages/*'
+
+  # MDX ecosystem packages
+  - 'mdx/apps/*'
+  - 'mdx/packages/*'
+  - 'mdx/packages/@mdxe/*'
+  - 'mdx/packages/@mdxai/*'
+  - 'mdx/packages/@mdxdb/*'
+  - 'mdx/packages/@mdxld/*'
+  - 'mdx/packages/@mdxui/*'
+  - 'mdx/primitives/packages/*'
