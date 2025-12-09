@@ -72,12 +72,18 @@ export interface AbstractCompetency extends Entity {
 
 /**
  * Abstract Task - unifies Tasks, Work Activities, Responsibilities
+ * Now uses GraphDL semantic format: verb.Object.preposition.PrepObject
  */
 export interface AbstractTask extends Entity {
   type: 'Task'
-  category: 'Task' | 'Activity' | 'Responsibility' | 'Duty'
   sourceType: string
-  // Unified attributes
+  // GraphDL semantic components
+  verb?: string
+  object?: string
+  preposition?: string
+  prepObject?: string
+  source?: string // Original source text for debugging
+  // Legacy attributes
   frequency?: string
   importance?: string
   complexity?: string

@@ -1,0 +1,6 @@
+[submodule ".standards"]
+	path = .standards
+	url = https://github.com/dot-org-ai/standards.org.ai.git
+[submodule "graphdl"]
+	path = graphdl
+	url = https://github.com/graphdl/semantics.git

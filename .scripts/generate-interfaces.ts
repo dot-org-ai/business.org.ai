@@ -3,24 +3,14 @@
 /**
  * Unified Abstract Interface Generator
  *
- * Generates unified abstract interfaces from the ingested standards data.
- * This script transforms source-specific data into domain-unified views:
+ * Generates unified abstract interfaces from the standards.org.ai submodule.
+ * Reads from .standards/.data/ and outputs to .data/
  *
- * Work Domain:
- *   - ONET Occupations + BLS Occupations → AbstractRole
- *   - ONET Skills/Abilities/Knowledge → AbstractCompetency
- *   - ONET Tasks + Work Activities → AbstractTask
- *   - Task descriptions → AbstractAction (semantic parsing)
- *   - Actions → AbstractEvent (past tense)
- *
- * Business Domain:
- *   - NAICS → AbstractIndustry
- *   - APQC → AbstractProcess
- *   - UNSPSC → AbstractProduct
- *   - NAPCS → AbstractService
- *
- * Geography Domain:
- *   - Census + ISO → AbstractLocation
+ * Key features:
+ * - Uses @graphdl/semantics for proper semantic parsing
+ * - AND/OR cartesian product expansion via GraphDL
+ * - Proper ID formats: PascalCase, action.Object, Subject.action.Object, Object.event
+ * - Source data included for debugging
  */
 
 import fs from 'fs'
@@ -41,12 +31,13 @@ import {
   AbstractLocation,
   NAMESPACES,
 } from './types.js'
+import { GraphDLParser, ParsedStatement } from '../graphdl/dist/index.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// Paths
-const STANDARDS_DIR = path.resolve(__dirname, '../.standards')
+// Paths - read from submodule, write to local .data
+const STANDARDS_DIR = path.resolve(__dirname, '../.standards/.data')
 const OUTPUT_DIR = path.resolve(__dirname, '../.data')
 const OUTPUT_REL_DIR = path.join(OUTPUT_DIR, 'relationships')
 
@@ -112,6 +103,9 @@ function ensureDir(dirPath: string): void {
   }
 }
 
+/**
+ * Convert text to PascalCase ID (no underscores, no dots)
+ */
 function toPascalCase(text: string): string {
   if (!text) return ''
   return text
@@ -124,38 +118,101 @@ function toPascalCase(text: string): string {
     .join('')
 }
 
-function toWikipediaStyle(text: string): string {
+/**
+ * Generate a short name (4-8 char abbreviation) for an entity
+ */
+function toShortName(text: string): string {
   if (!text) return ''
+
   const words = text
     .replace(/[^\w\s-]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .split(/[\s_-]+/)
     .filter((w) => w.length > 0)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
 
-  return words.length <= 3 ? words.join('') : words.join('_')
+  if (words.length === 0) return ''
+
+  // Single word: first 4-6 chars
+  if (words.length === 1) {
+    return words[0].slice(0, 6).toLowerCase()
+  }
+
+  // Multiple words: take first letters or first 2 chars
+  if (words.length <= 4) {
+    return words.map(w => w.slice(0, 2)).join('').toLowerCase().slice(0, 8)
+  }
+
+  // Many words: take first letter of each
+  return words.map(w => w[0]).join('').toLowerCase().slice(0, 8)
+}
+
+// ============================================================================
+// GraphDL Parser Instance (initialized once)
+// ============================================================================
+
+let graphdlParser: GraphDLParser | null = null
+
+async function getGraphDLParser(): Promise<GraphDLParser> {
+  if (!graphdlParser) {
+    graphdlParser = new GraphDLParser()
+    await graphdlParser.initialize()
+  }
+  return graphdlParser
+}
+
+/**
+ * Irregular verb past tense mappings (still needed for event generation)
+ */
+const IRREGULAR_PAST_TENSE: Record<string, string> = {
+  be: 'was', have: 'had', do: 'did', go: 'went', make: 'made',
+  take: 'took', see: 'saw', get: 'got', give: 'gave', find: 'found',
+  know: 'knew', think: 'thought', tell: 'told', leave: 'left',
+  keep: 'kept', begin: 'began', write: 'wrote', run: 'ran',
+  read: 'read', lead: 'led', build: 'built', buy: 'bought',
+  bring: 'brought', hold: 'held', set: 'set', put: 'put',
+  cut: 'cut', send: 'sent', spend: 'spent', meet: 'met',
+  pay: 'paid', sell: 'sold', choose: 'chose', drive: 'drove',
+  win: 'won', draw: 'drew', grow: 'grew', throw: 'threw',
+  teach: 'taught', catch: 'caught', understand: 'understood',
+}
+
+function toPastTense(verb: string): string {
+  const v = verb.toLowerCase()
+  if (IRREGULAR_PAST_TENSE[v]) return IRREGULAR_PAST_TENSE[v]
+  if (v.endsWith('e')) return v + 'd'
+  if (v.endsWith('y') && !['a', 'e', 'i', 'o', 'u'].includes(v[v.length - 2])) {
+    return v.slice(0, -1) + 'ied'
+  }
+  // Double consonant for short verbs ending in CVC
+  const vowels = ['a', 'e', 'i', 'o', 'u']
+  if (v.length >= 3 && v.length <= 4) {
+    const last = v[v.length - 1]
+    const secondLast = v[v.length - 2]
+    const thirdLast = v[v.length - 3]
+    if (!vowels.includes(last) && vowels.includes(secondLast) && !vowels.includes(thirdLast)) {
+      if (!['w', 'x', 'y'].includes(last)) {
+        return v + last + 'ed'
+      }
+    }
+  }
+  return v + 'ed'
 }
 
 // ============================================================================
 // Work Domain Generation
 // ============================================================================
 
-/**
- * Generate unified Roles from ONET and BLS occupations
- */
 function generateRoles(): AbstractRole[] {
   console.log('\n👔 Generating Unified Roles...')
 
   const roles: AbstractRole[] = []
   const seen = new Set<string>()
 
-  // Load ONET Occupations
-  const onetOccupations = parseTSV(
-    path.join(STANDARDS_DIR, 'ONET', 'Occupations.tsv')
-  )
+  // Load ONET Occupations from standards submodule
+  const onetOccupations = parseTSV(path.join(STANDARDS_DIR, 'ONET.Occupations.tsv'))
   for (const occ of onetOccupations) {
-    const id = occ.id || toPascalCase(occ.name)
+    const id = toPascalCase(occ.name || occ.id || '')
     if (!id || seen.has(id)) continue
     seen.add(id)
 
@@ -166,18 +223,17 @@ function generateRoles(): AbstractRole[] {
       name: occ.name || '',
       description: occ.description || '',
       code: occ.code,
+      shortName: toShortName(occ.name || ''),
       category: 'Occupation',
       sourceType: 'ONETOccupation',
       sourceCode: occ.code,
     })
   }
 
-  // Load BLS Occupations (merge with ONET where possible)
-  const blsOccupations = parseTSV(
-    path.join(STANDARDS_DIR, 'BLS', 'Occupations.tsv')
-  )
+  // Load BLS Occupations
+  const blsOccupations = parseTSV(path.join(STANDARDS_DIR, 'BLS.Occupations.tsv'))
   for (const occ of blsOccupations) {
-    const id = occ.id || toPascalCase(occ.name)
+    const id = toPascalCase(occ.name || occ.id || '')
     if (!id || seen.has(id)) continue
     seen.add(id)
 
@@ -188,6 +244,7 @@ function generateRoles(): AbstractRole[] {
       name: occ.name || '',
       description: occ.description || '',
       code: occ.code,
+      shortName: toShortName(occ.name || ''),
       category: 'Occupation',
       sourceType: 'BLSOccupation',
       sourceCode: occ.code,
@@ -198,9 +255,6 @@ function generateRoles(): AbstractRole[] {
   return roles
 }
 
-/**
- * Generate unified Competencies from ONET skills, abilities, knowledge
- */
 function generateCompetencies(): AbstractCompetency[] {
   console.log('\n💪 Generating Unified Competencies...')
 
@@ -212,16 +266,16 @@ function generateCompetencies(): AbstractCompetency[] {
     category: 'Skill' | 'Ability' | 'Knowledge'
     sourceType: string
   }> = [
-    { file: 'Skills.tsv', category: 'Skill', sourceType: 'ONETSkill' },
-    { file: 'Abilities.tsv', category: 'Ability', sourceType: 'ONETAbility' },
-    { file: 'Knowledge.tsv', category: 'Knowledge', sourceType: 'ONETKnowledge' },
+    { file: 'ONET.Skills.tsv', category: 'Skill', sourceType: 'ONETSkill' },
+    { file: 'ONET.Abilities.tsv', category: 'Ability', sourceType: 'ONETAbility' },
+    { file: 'ONET.Knowledge.tsv', category: 'Knowledge', sourceType: 'ONETKnowledge' },
   ]
 
   for (const source of sources) {
-    const data = parseTSV(path.join(STANDARDS_DIR, 'ONET', source.file))
+    const data = parseTSV(path.join(STANDARDS_DIR, source.file))
 
     for (const item of data) {
-      const id = item.id || toPascalCase(item.name)
+      const id = toPascalCase(item.name || item.id || '')
       if (!id || seen.has(id)) continue
       seen.add(id)
 
@@ -232,6 +286,7 @@ function generateCompetencies(): AbstractCompetency[] {
         name: item.name || '',
         description: item.description || '',
         code: item.code,
+        shortName: toShortName(item.name || ''),
         category: source.category,
         sourceType: source.sourceType,
       })
@@ -243,73 +298,83 @@ function generateCompetencies(): AbstractCompetency[] {
 }
 
 /**
- * Generate unified Tasks from ONET tasks and work activities
+ * Generate Tasks using GraphDL semantic parsing
+ * Tasks are parsed into action.Object format like Actions
  */
-function generateTasks(): AbstractTask[] {
-  console.log('\n📋 Generating Unified Tasks...')
+async function generateTasks(parser: GraphDLParser): Promise<AbstractTask[]> {
+  console.log('\n📋 Generating Unified Tasks (GraphDL parsing)...')
 
   const tasks: AbstractTask[] = []
   const seen = new Set<string>()
 
-  // Load ONET Tasks
-  const onetTasks = parseTSV(path.join(STANDARDS_DIR, 'ONET', 'Tasks.tsv'))
-  for (const task of onetTasks) {
-    const id = task.id || toWikipediaStyle(task.name?.slice(0, 60) || '')
-    if (!id || seen.has(id)) continue
-    seen.add(id)
+  // Helper to add a parsed task
+  function addTask(
+    stmt: ParsedStatement,
+    sourceText: string,
+    code: string,
+    sourceType: string
+  ): void {
+    if (!stmt.predicate || !stmt.object) return
+
+    // Generate GraphDL ID
+    const graphdlId = parser.toGraphDL(stmt)
+    if (!graphdlId || seen.has(graphdlId)) return
+    seen.add(graphdlId)
+
+    const objectPascal = toPascalCase(stmt.object)
 
     tasks.push({
       ns: NAMESPACES.tasks,
       type: 'Task',
-      id,
-      name: task.name || '',
-      description: task.description || task.name || '',
-      code: task.code,
-      category: 'Task',
-      sourceType: 'ONETTask',
+      id: graphdlId,
+      name: `${stmt.predicate} ${stmt.object}`,
+      description: sourceText,
+      code,
+      shortName: toShortName(`${stmt.predicate} ${stmt.object}`),
+      verb: stmt.predicate.toLowerCase(),
+      object: objectPascal,
+      preposition: stmt.preposition,
+      prepObject: stmt.complement ? toPascalCase(stmt.complement) : undefined,
+      source: sourceText,
+      sourceType,
     })
+  }
+
+  // Load ONET Tasks
+  // NOTE: Use description (full text) instead of name (truncated) for parsing
+  const onetTasks = parseTSV(path.join(STANDARDS_DIR, 'ONET.Tasks.tsv'))
+  for (const task of onetTasks) {
+    const sourceText = task.description || task.name || ''
+    if (!sourceText) continue
+
+    const parsed = parser.parse(sourceText)
+
+    // Process all expansions (AND/OR cartesian products)
+    if (parsed.expansions && parsed.expansions.length > 0) {
+      for (const expansion of parsed.expansions) {
+        addTask(expansion, sourceText, task.code || '', 'ONETTask')
+      }
+    } else {
+      addTask(parsed, sourceText, task.code || '', 'ONETTask')
+    }
   }
 
   // Load Work Activities
-  const workActivities = parseTSV(
-    path.join(STANDARDS_DIR, 'ONET', 'WorkActivities.tsv')
-  )
+  // NOTE: Use description (full text) instead of name (truncated) for parsing
+  const workActivities = parseTSV(path.join(STANDARDS_DIR, 'ONET.WorkActivities.tsv'))
   for (const activity of workActivities) {
-    const id = activity.id || toPascalCase(activity.name)
-    if (!id || seen.has(id)) continue
-    seen.add(id)
+    const sourceText = activity.description || activity.name || ''
+    if (!sourceText) continue
 
-    tasks.push({
-      ns: NAMESPACES.tasks,
-      type: 'Task',
-      id,
-      name: activity.name || '',
-      description: activity.description || activity.name || '',
-      code: activity.code,
-      category: 'Activity',
-      sourceType: 'ONETWorkActivity',
-    })
-  }
+    const parsed = parser.parse(sourceText)
 
-  // Load Detailed Work Activities
-  const dwas = parseTSV(
-    path.join(STANDARDS_DIR, 'ONET', 'DetailedWorkActivities.tsv')
-  )
-  for (const dwa of dwas) {
-    const id = dwa.id || toPascalCase(dwa.name)
-    if (!id || seen.has(id)) continue
-    seen.add(id)
-
-    tasks.push({
-      ns: NAMESPACES.tasks,
-      type: 'Task',
-      id,
-      name: dwa.name || '',
-      description: dwa.description || dwa.name || '',
-      code: dwa.code,
-      category: 'Activity',
-      sourceType: 'ONETDWA',
-    })
+    if (parsed.expansions && parsed.expansions.length > 0) {
+      for (const expansion of parsed.expansions) {
+        addTask(expansion, sourceText, activity.code || '', 'ONETWorkActivity')
+      }
+    } else {
+      addTask(parsed, sourceText, activity.code || '', 'ONETWorkActivity')
+    }
   }
 
   console.log(`  📊 Generated ${tasks.length} unified tasks`)
@@ -317,277 +382,114 @@ function generateTasks(): AbstractTask[] {
 }
 
 /**
- * Load verb conjugation data
+ * Generate Actions and Events using @graphdl/semantics parser
+ * Includes source task references for debugging
  */
-interface VerbData {
-  pastTense: string
-  gerund: string
-}
-
-function loadVerbs(): Map<string, VerbData> {
-  const verbMap = new Map<string, VerbData>()
-
-  // Common irregular verbs
-  const irregulars: Record<string, { past: string; gerund: string }> = {
-    be: { past: 'was', gerund: 'being' },
-    have: { past: 'had', gerund: 'having' },
-    do: { past: 'did', gerund: 'doing' },
-    go: { past: 'went', gerund: 'going' },
-    make: { past: 'made', gerund: 'making' },
-    take: { past: 'took', gerund: 'taking' },
-    see: { past: 'saw', gerund: 'seeing' },
-    get: { past: 'got', gerund: 'getting' },
-    give: { past: 'gave', gerund: 'giving' },
-    find: { past: 'found', gerund: 'finding' },
-    know: { past: 'knew', gerund: 'knowing' },
-    think: { past: 'thought', gerund: 'thinking' },
-    tell: { past: 'told', gerund: 'telling' },
-    leave: { past: 'left', gerund: 'leaving' },
-    keep: { past: 'kept', gerund: 'keeping' },
-    begin: { past: 'began', gerund: 'beginning' },
-    write: { past: 'wrote', gerund: 'writing' },
-    run: { past: 'ran', gerund: 'running' },
-    read: { past: 'read', gerund: 'reading' },
-    lead: { past: 'led', gerund: 'leading' },
-    build: { past: 'built', gerund: 'building' },
-    buy: { past: 'bought', gerund: 'buying' },
-    bring: { past: 'brought', gerund: 'bringing' },
-    hold: { past: 'held', gerund: 'holding' },
-    set: { past: 'set', gerund: 'setting' },
-    put: { past: 'put', gerund: 'putting' },
-    cut: { past: 'cut', gerund: 'cutting' },
-    send: { past: 'sent', gerund: 'sending' },
-    spend: { past: 'spent', gerund: 'spending' },
-    meet: { past: 'met', gerund: 'meeting' },
-    pay: { past: 'paid', gerund: 'paying' },
-    sell: { past: 'sold', gerund: 'selling' },
-    choose: { past: 'chose', gerund: 'choosing' },
-    drive: { past: 'drove', gerund: 'driving' },
-    win: { past: 'won', gerund: 'winning' },
-  }
-
-  for (const [verb, forms] of Object.entries(irregulars)) {
-    verbMap.set(verb, { pastTense: forms.past, gerund: forms.gerund })
-  }
-
-  return verbMap
-}
-
-function toPastTense(verb: string, verbMap: Map<string, VerbData>): string {
-  const v = verb.toLowerCase()
-  if (verbMap.has(v)) {
-    return verbMap.get(v)!.pastTense
-  }
-  // Regular conjugation
-  if (v.endsWith('e')) return v + 'd'
-  if (v.endsWith('y') && !['a', 'e', 'i', 'o', 'u'].includes(v[v.length - 2])) {
-    return v.slice(0, -1) + 'ied'
-  }
-  return v + 'ed'
-}
-
-/**
- * Parse task descriptions into semantic actions
- */
-function parseTaskToActions(
-  task: AbstractTask,
-  verbSet: Set<string>
-): Array<{ verb: string; object: string; preposition?: string; prepObject?: string }> {
-  const actions: Array<{
-    verb: string
-    object: string
-    preposition?: string
-    prepObject?: string
-  }> = []
-
-  const text = task.name
-    .toLowerCase()
-    .replace(/['']/g, '')
-    .replace(/[^\w\s,]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-  const words = text.split(' ')
-  const verbPositions: Array<{ verb: string; index: number }> = []
-
-  for (let i = 0; i < words.length; i++) {
-    if (verbSet.has(words[i])) {
-      verbPositions.push({ verb: words[i], index: i })
-    }
-  }
-
-  if (verbPositions.length === 0) return actions
-
-  for (let i = 0; i < verbPositions.length; i++) {
-    const { verb, index } = verbPositions[i]
-    const nextIndex =
-      i + 1 < verbPositions.length ? verbPositions[i + 1].index : words.length
-
-    const objectWords = words.slice(index + 1, nextIndex)
-    if (objectWords.length === 0) continue
-
-    const stopWords = ['a', 'an', 'the', 'or', 'and', 'of', 'in', 'on', 'at', 's']
-    const filtered = objectWords.filter(
-      (w) => !stopWords.includes(w) && w.length > 1
-    )
-    if (filtered.length === 0) continue
-
-    const preps = ['to', 'for', 'with', 'in', 'on', 'by', 'from', 'using']
-    const prepIndex = filtered.findIndex((w) => preps.includes(w))
-
-    if (prepIndex > 0) {
-      const beforePrep = filtered.slice(0, prepIndex)
-      const afterPrep = filtered.slice(prepIndex + 1)
-
-      actions.push({
-        verb,
-        object: toPascalCase(beforePrep.join(' ')),
-        preposition: filtered[prepIndex],
-        prepObject: afterPrep.length > 0 ? toPascalCase(afterPrep.join(' ')) : undefined,
-      })
-    } else {
-      actions.push({
-        verb,
-        object: toPascalCase(filtered.join(' ')),
-      })
-    }
-  }
-
-  return actions
-}
-
-/**
- * Generate Actions and Events from Tasks
- */
-function generateActionsAndEvents(tasks: AbstractTask[]): {
+async function generateActionsAndEvents(
+  tasks: AbstractTask[],
+  parser: GraphDLParser
+): Promise<{
   actions: AbstractAction[]
   events: AbstractEvent[]
   taskActionRels: Relationship[]
   actionEventRels: Relationship[]
-} {
-  console.log('\n⚡ Generating Actions and Events...')
-
-  const verbMap = loadVerbs()
-  const commonVerbs = [
-    'manage',
-    'develop',
-    'create',
-    'design',
-    'implement',
-    'analyze',
-    'evaluate',
-    'monitor',
-    'coordinate',
-    'direct',
-    'supervise',
-    'plan',
-    'organize',
-    'conduct',
-    'prepare',
-    'maintain',
-    'review',
-    'assess',
-    'provide',
-    'support',
-    'ensure',
-    'establish',
-    'perform',
-    'operate',
-    'process',
-    'communicate',
-    'collaborate',
-    'lead',
-    'train',
-    'report',
-    'investigate',
-    'research',
-    'determine',
-    'identify',
-    'recommend',
-    'resolve',
-    'negotiate',
-    'administer',
-    'schedule',
-    'document',
-    'verify',
-    'inspect',
-    'test',
-    'diagnose',
-    'repair',
-    'install',
-    'configure',
-    'troubleshoot',
-    'optimize',
-  ]
-  const verbSet = new Set(commonVerbs)
+}> {
+  console.log('\n⚡ Generating Actions and Events (GraphDL semantic parsing)...')
 
   const actionMap = new Map<string, AbstractAction>()
   const eventMap = new Map<string, AbstractEvent>()
   const taskActionRels: Relationship[] = []
   const actionEventRels: Relationship[] = []
 
+  /**
+   * Process a single parsed statement into action and event
+   */
+  function processStatement(
+    stmt: ParsedStatement,
+    task: AbstractTask,
+    sourceText: string
+  ): void {
+    if (!stmt.predicate || !stmt.object) return
+
+    // Generate GraphDL ID using the parser
+    const graphdlId = parser.toGraphDL(stmt)
+
+    // Convert object to PascalCase for proper IDs
+    const objectPascal = toPascalCase(stmt.object)
+    const complementPascal = stmt.complement ? toPascalCase(stmt.complement) : undefined
+
+    // Create action
+    if (!actionMap.has(graphdlId)) {
+      const prepPhrase = stmt.preposition && stmt.complement
+        ? ` ${stmt.preposition} ${stmt.complement}`
+        : ''
+
+      actionMap.set(graphdlId, {
+        ns: NAMESPACES.actions,
+        type: 'Action',
+        id: graphdlId,
+        name: `${stmt.predicate} ${stmt.object}${prepPhrase}`,
+        description: stmt.original,
+        shortName: toShortName(`${stmt.predicate} ${stmt.object}`),
+        verb: stmt.predicate.toLowerCase(),
+        object: objectPascal,
+        preposition: stmt.preposition,
+        prepObject: complementPascal,
+        source: sourceText, // Original source text for debugging
+      })
+    }
+
+    // Task → Action relationship
+    taskActionRels.push({
+      from: `https://${NAMESPACES.tasks}/${task.id}`,
+      to: `https://${NAMESPACES.actions}/${graphdlId}`,
+      predicate: 'hasAction',
+      reverse: 'actionOf',
+    })
+
+    // Create Event in GraphDL format: Object.pastTense
+    const pastTense = toPastTense(stmt.predicate.toLowerCase())
+    const eventId = `${objectPascal}.${pastTense}`
+
+    if (!eventMap.has(eventId)) {
+      eventMap.set(eventId, {
+        ns: NAMESPACES.events,
+        type: 'Event',
+        id: eventId,
+        name: `${objectPascal} ${pastTense}`,
+        description: `${objectPascal} was ${pastTense}`,
+        shortName: toShortName(`${objectPascal} ${pastTense}`),
+        pastTense,
+        verb: stmt.predicate.toLowerCase(),
+        object: objectPascal,
+        source: sourceText, // Original source text for debugging
+        sourceActionId: graphdlId,
+      })
+    }
+
+    // Action → Event relationship
+    actionEventRels.push({
+      from: `https://${NAMESPACES.actions}/${graphdlId}`,
+      to: `https://${NAMESPACES.events}/${eventId}`,
+      predicate: 'produces',
+      reverse: 'producedBy',
+    })
+  }
+
   for (const task of tasks) {
-    const parsedActions = parseTaskToActions(task, verbSet)
+    // Parse task source using GraphDL parser
+    // Use task.source (full text) instead of task.name (which is formatted)
+    const sourceText = task.source || task.description || task.name || ''
+    const parsed = parser.parse(sourceText)
 
-    for (const parsed of parsedActions) {
-      if (!parsed.object) continue
-
-      // Create action ID
-      const actionId = parsed.preposition && parsed.prepObject
-        ? `${parsed.verb}.${parsed.object}.${parsed.preposition}.${parsed.prepObject}`
-        : `${parsed.verb}.${parsed.object}`
-
-      if (!actionMap.has(actionId)) {
-        const prepPhrase =
-          parsed.preposition && parsed.prepObject
-            ? ` ${parsed.preposition} ${parsed.prepObject}`
-            : ''
-
-        actionMap.set(actionId, {
-          ns: NAMESPACES.actions,
-          type: 'Action',
-          id: actionId,
-          name: `${parsed.verb} ${parsed.object}${prepPhrase}`,
-          description: task.name,
-          verb: parsed.verb,
-          object: parsed.object,
-          preposition: parsed.preposition,
-          prepObject: parsed.prepObject,
-        })
+    // If there are expansions (from AND/OR), process each one
+    if (parsed.expansions && parsed.expansions.length > 0) {
+      for (const expansion of parsed.expansions) {
+        processStatement(expansion, task, sourceText)
       }
-
-      // Create task → action relationship
-      taskActionRels.push({
-        from: `https://${NAMESPACES.tasks}/${task.id}`,
-        to: `https://${NAMESPACES.actions}/${actionId}`,
-        predicate: 'hasAction',
-        reverse: 'actionOf',
-      })
-
-      // Create event
-      const pastTense = toPastTense(parsed.verb, verbMap)
-      const eventId = `${parsed.object}.${pastTense}`
-
-      if (!eventMap.has(eventId)) {
-        eventMap.set(eventId, {
-          ns: NAMESPACES.events,
-          type: 'Event',
-          id: eventId,
-          name: `${parsed.object} ${pastTense}`,
-          description: `${parsed.object} was ${pastTense}`,
-          pastTense,
-          verb: parsed.verb,
-          object: parsed.object,
-        })
-      }
-
-      // Create action → event relationship
-      actionEventRels.push({
-        from: `https://${NAMESPACES.actions}/${actionId}`,
-        to: `https://${NAMESPACES.events}/${eventId}`,
-        predicate: 'produces',
-        reverse: 'producedBy',
-      })
+    } else {
+      // No expansions, process the single parsed statement
+      processStatement(parsed, task, sourceText)
     }
   }
 
@@ -603,76 +505,62 @@ function generateActionsAndEvents(tasks: AbstractTask[]): {
 // Business Domain Generation
 // ============================================================================
 
-/**
- * Generate unified Industries from NAICS
- */
 function generateIndustries(): AbstractIndustry[] {
   console.log('\n🏭 Generating Unified Industries...')
 
   const industries: AbstractIndustry[] = []
   const seen = new Set<string>()
 
-  const levels: Array<{
-    file: string
-    category: 'Sector' | 'Subsector' | 'Group' | 'Industry' | 'SubIndustry'
-    level: number
-  }> = [
-    { file: 'Sectors.tsv', category: 'Sector', level: 1 },
-    { file: 'Subsectors.tsv', category: 'Subsector', level: 2 },
-    { file: 'IndustryGroups.tsv', category: 'Group', level: 3 },
-    { file: 'Industries.tsv', category: 'Industry', level: 4 },
-    { file: 'NationalIndustries.tsv', category: 'SubIndustry', level: 5 },
-  ]
+  // Helper to add industry from any NAICS level
+  function addIndustry(item: Record<string, string>, level: number): void {
+    const id = toPascalCase(item.name || item.id || '')
+    if (!id || seen.has(id)) return
+    seen.add(id)
 
-  for (const level of levels) {
-    const data = parseTSV(path.join(STANDARDS_DIR, 'NAICS', level.file))
-
-    for (const item of data) {
-      const id = item.id || toPascalCase(item.name)
-      if (!id || seen.has(id)) continue
-      seen.add(id)
-
-      industries.push({
-        ns: NAMESPACES.industries,
-        type: 'Industry',
-        id,
-        name: item.name || '',
-        description: item.description || '',
-        code: item.code,
-        category: level.category,
-        sourceType: 'NAICS',
-        level: level.level,
-      })
-    }
+    industries.push({
+      ns: NAMESPACES.industries,
+      type: 'Industry',
+      id,
+      name: item.name || '',
+      description: item.description || '',
+      code: item.code,
+      shortName: toShortName(item.name || ''),
+      sourceType: 'NAICS',
+      level,
+    })
   }
+
+  // Load all NAICS levels - each is still just an "Industry"
+  const sectors = parseTSV(path.join(STANDARDS_DIR, 'NAICS.Sectors.tsv'))
+  sectors.forEach(item => addIndustry(item, 1))
+
+  const subsectors = parseTSV(path.join(STANDARDS_DIR, 'NAICS.Subsectors.tsv'))
+  subsectors.forEach(item => addIndustry(item, 2))
+
+  const groups = parseTSV(path.join(STANDARDS_DIR, 'NAICS.IndustryGroups.tsv'))
+  groups.forEach(item => addIndustry(item, 3))
+
+  const naicsIndustries = parseTSV(path.join(STANDARDS_DIR, 'NAICS.Industries.tsv'))
+  naicsIndustries.forEach(item => addIndustry(item, 4))
+
+  const national = parseTSV(path.join(STANDARDS_DIR, 'NAICS.NationalIndustries.tsv'))
+  national.forEach(item => addIndustry(item, 5))
 
   console.log(`  📊 Generated ${industries.length} unified industries`)
   return industries
 }
 
-/**
- * Generate unified Processes from APQC
- */
 function generateProcesses(): AbstractProcess[] {
   console.log('\n⚙️ Generating Unified Processes...')
 
   const processes: AbstractProcess[] = []
   const seen = new Set<string>()
 
-  const data = parseTSV(path.join(STANDARDS_DIR, 'APQC', 'Processes.tsv'))
-
-  for (const item of data) {
-    const id = item.id || toPascalCase(item.name)
-    if (!id || seen.has(id)) continue
+  // Helper to add process
+  function addProcess(item: Record<string, string>, level: number): void {
+    const id = toPascalCase(item.name || item.id || '')
+    if (!id || seen.has(id)) return
     seen.add(id)
-
-    // Determine category from code structure
-    const code = item.code || ''
-    let category: 'Category' | 'Group' | 'Process' | 'Activity' = 'Process'
-    if (code.match(/^\d+$/)) category = 'Category'
-    else if (code.match(/^\d+\.\d+$/)) category = 'Group'
-    else if (code.match(/^\d+\.\d+\.\d+$/)) category = 'Process'
-    else if (code.match(/^\d+\.\d+\.\d+\.\d+/)) category = 'Activity'
 
     processes.push({
       ns: NAMESPACES.process,
@@ -681,30 +569,40 @@ function generateProcesses(): AbstractProcess[] {
       name: item.name || '',
       description: item.description || '',
       code: item.code,
-      category,
+      shortName: toShortName(item.name || ''),
       sourceType: 'APQC',
+      level,
       industry: item.industry,
     })
+  }
+
+  // APQC Processes - determine level from code structure
+  const data = parseTSV(path.join(STANDARDS_DIR, 'APQC.Processes.tsv'))
+  for (const item of data) {
+    const code = item.code || ''
+    let level = 3 // default
+    if (code.match(/^\d+$/)) level = 1
+    else if (code.match(/^\d+\.\d+$/)) level = 2
+    else if (code.match(/^\d+\.\d+\.\d+$/)) level = 3
+    else if (code.match(/^\d+\.\d+\.\d+\.\d+/)) level = 4
+
+    addProcess(item, level)
   }
 
   console.log(`  📊 Generated ${processes.length} unified processes`)
   return processes
 }
 
-/**
- * Generate unified Products from various sources
- */
 function generateProducts(): AbstractProduct[] {
   console.log('\n📦 Generating Unified Products...')
 
   const products: AbstractProduct[] = []
   const seen = new Set<string>()
 
-  // Load from GS1
-  const gs1Classes = parseTSV(path.join(STANDARDS_DIR, 'GS1', 'Classes.tsv'))
-  for (const item of gs1Classes) {
-    const id = item.id || toPascalCase(item.name)
-    if (!id || seen.has(id)) continue
+  // Helper to add product from any source
+  function addProduct(item: Record<string, string>, source: string, level: number): void {
+    const id = toPascalCase(item.name || item.id || '')
+    if (!id || seen.has(id)) return
     seen.add(id)
 
     products.push({
@@ -714,55 +612,85 @@ function generateProducts(): AbstractProduct[] {
       name: item.name || '',
       description: item.description || '',
       code: item.code,
-      category: 'Class',
-      sourceType: 'GS1',
+      shortName: toShortName(item.name || ''),
+      sourceType: source,
+      level,
     })
   }
+
+  // GS1 GPC hierarchy (focused on retail/consumer products)
+  const gs1Segments = parseTSV(path.join(STANDARDS_DIR, 'GS1.Segments.tsv'))
+  gs1Segments.forEach(item => addProduct(item, 'GS1', 1))
+
+  const gs1Families = parseTSV(path.join(STANDARDS_DIR, 'GS1.Families.tsv'))
+  gs1Families.forEach(item => addProduct(item, 'GS1', 2))
+
+  const gs1Classes = parseTSV(path.join(STANDARDS_DIR, 'GS1.Classes.tsv'))
+  gs1Classes.forEach(item => addProduct(item, 'GS1', 3))
+
+  const gs1Bricks = parseTSV(path.join(STANDARDS_DIR, 'GS1.Bricks.tsv'))
+  gs1Bricks.forEach(item => addProduct(item, 'GS1', 4))
+
+  // UNSPSC hierarchy (broader B2B product classification)
+  const unspscSegments = parseTSV(path.join(STANDARDS_DIR, 'UNSPSC.Segments.tsv'))
+  unspscSegments.forEach(item => addProduct(item, 'UNSPSC', 1))
+
+  const unspscFamilies = parseTSV(path.join(STANDARDS_DIR, 'UNSPSC.Families.tsv'))
+  unspscFamilies.forEach(item => addProduct(item, 'UNSPSC', 2))
+
+  const unspscClasses = parseTSV(path.join(STANDARDS_DIR, 'UNSPSC.Classes.tsv'))
+  unspscClasses.forEach(item => addProduct(item, 'UNSPSC', 3))
+
+  // Note: UNSPSC.Commodities has 150K+ items - consider if needed
+  // const unspscCommodities = parseTSV(path.join(STANDARDS_DIR, 'UNSPSC.Commodities.tsv'))
+  // unspscCommodities.forEach(item => addProduct(item, 'UNSPSC', 4))
 
   console.log(`  📊 Generated ${products.length} unified products`)
   return products
 }
 
-/**
- * Generate unified Services from NAPCS
- */
 function generateServices(): AbstractService[] {
   console.log('\n🛎️ Generating Unified Services...')
 
   const services: AbstractService[] = []
   const seen = new Set<string>()
 
-  const levels: Array<{
-    file: string
-    category: 'Section' | 'Division' | 'Group' | 'Class' | 'Subclass'
-  }> = [
-    { file: 'Sections.tsv', category: 'Section' },
-    { file: 'Divisions.tsv', category: 'Division' },
-    { file: 'Groups.tsv', category: 'Group' },
-    { file: 'Classes.tsv', category: 'Class' },
-    { file: 'Subclasses.tsv', category: 'Subclass' },
-  ]
-
-  for (const level of levels) {
-    const data = parseTSV(path.join(STANDARDS_DIR, 'NAPCS', level.file))
-
-    for (const item of data) {
-      const id = item.id || toPascalCase(item.name)
-      if (!id || seen.has(id)) continue
-      seen.add(id)
-
-      services.push({
-        ns: NAMESPACES.services,
-        type: 'Service',
-        id,
-        name: item.name || '',
-        description: item.description || '',
-        code: item.code,
-        category: level.category,
-        sourceType: 'NAPCS',
-      })
-    }
+  // Helper to check if NAPCS code is a service (codes 500+ are services)
+  function isServiceCode(code: string): boolean {
+    const numCode = parseInt(code, 10)
+    return numCode >= 500
   }
+
+  // Helper to add service
+  function addService(item: Record<string, string>, source: string, level: number): void {
+    const id = toPascalCase(item.name || item.id || '')
+    if (!id || seen.has(id)) return
+    seen.add(id)
+
+    services.push({
+      ns: NAMESPACES.services,
+      type: 'Service',
+      id,
+      name: item.name || '',
+      description: item.description || '',
+      code: item.code,
+      shortName: toShortName(item.name || ''),
+      sourceType: source,
+      level,
+    })
+  }
+
+  // NAPCS Groups - only service categories (code >= 500)
+  const napcsGroups = parseTSV(path.join(STANDARDS_DIR, 'NAPCS.Groups.tsv'))
+  napcsGroups
+    .filter(item => isServiceCode(item.code || ''))
+    .forEach(item => addService(item, 'NAPCS', 1))
+
+  // NAPCS Products - only services (code starting with 5+)
+  const napcsProducts = parseTSV(path.join(STANDARDS_DIR, 'NAPCS.Products.tsv'))
+  napcsProducts
+    .filter(item => isServiceCode((item.code || '').slice(0, 3)))
+    .forEach(item => addService(item, 'NAPCS', 2))
 
   console.log(`  📊 Generated ${services.length} unified services`)
   return services
@@ -772,9 +700,6 @@ function generateServices(): AbstractService[] {
 // Geography Domain Generation
 // ============================================================================
 
-/**
- * Generate unified Locations
- */
 function generateLocations(): AbstractLocation[] {
   console.log('\n🌍 Generating Unified Locations...')
 
@@ -782,9 +707,9 @@ function generateLocations(): AbstractLocation[] {
   const seen = new Set<string>()
 
   // Load ISO Countries
-  const countries = parseTSV(path.join(STANDARDS_DIR, 'ISO', 'Countries.tsv'))
+  const countries = parseTSV(path.join(STANDARDS_DIR, 'ISO.Countries.tsv'))
   for (const item of countries) {
-    const id = item.id || toPascalCase(item.name)
+    const id = toPascalCase(item.name || item.id || '')
     if (!id || seen.has(id)) continue
     seen.add(id)
 
@@ -795,6 +720,7 @@ function generateLocations(): AbstractLocation[] {
       name: item.name || '',
       description: item.description || item.name || '',
       code: item.code,
+      shortName: item.code || toShortName(item.name || ''),
       category: 'Country',
       sourceType: 'ISO',
       isoCode: item.code,
@@ -802,9 +728,9 @@ function generateLocations(): AbstractLocation[] {
   }
 
   // Load Census States
-  const states = parseTSV(path.join(STANDARDS_DIR, 'Census', 'States.tsv'))
+  const states = parseTSV(path.join(STANDARDS_DIR, 'Census.States.tsv'))
   for (const item of states) {
-    const id = item.id || toPascalCase(item.name)
+    const id = toPascalCase(item.name || item.id || '')
     if (!id || seen.has(id)) continue
     seen.add(id)
 
@@ -815,28 +741,10 @@ function generateLocations(): AbstractLocation[] {
       name: item.name || '',
       description: item.description || item.name || '',
       code: item.code,
+      shortName: item.code || toShortName(item.name || ''),
       category: 'State',
       sourceType: 'Census',
       fipsCode: item.code,
-    })
-  }
-
-  // Load CBSAs
-  const cbsas = parseTSV(path.join(STANDARDS_DIR, 'Census', 'CBSAs.tsv'))
-  for (const item of cbsas) {
-    const id = item.id || toPascalCase(item.name)
-    if (!id || seen.has(id)) continue
-    seen.add(id)
-
-    locations.push({
-      ns: NAMESPACES.locations,
-      type: 'Location',
-      id,
-      name: item.name || '',
-      description: item.description || item.name || '',
-      code: item.code,
-      category: 'CBSA',
-      sourceType: 'Census',
     })
   }
 
@@ -873,103 +781,73 @@ function dedupeRelationships(rels: Relationship[]): Relationship[] {
 // ============================================================================
 
 async function main(): Promise<void> {
-  console.log('🏢 Unified Abstract Interface Generation')
-  console.log('========================================')
+  console.log('🏢 Unified Abstract Interface Generation (GraphDL)')
+  console.log('==================================================')
   console.log(`Source: ${STANDARDS_DIR}`)
   console.log(`Output: ${OUTPUT_DIR}`)
 
-  // Check if standards directory exists
+  // Check if standards submodule exists
   if (!fs.existsSync(STANDARDS_DIR)) {
-    console.error('\n❌ Standards directory not found!')
+    console.error('\n❌ Standards submodule not found!')
     console.error(`   Expected: ${STANDARDS_DIR}`)
     console.error('')
-    console.error('Run ingest-standards.ts first:')
-    console.error('   npx tsx .scripts/ingest-standards.ts')
+    console.error('Initialize the submodule:')
+    console.error('   git submodule update --init --recursive')
+    console.error('   cd .standards && git lfs pull')
     process.exit(1)
   }
 
   ensureDir(OUTPUT_DIR)
   ensureDir(OUTPUT_REL_DIR)
 
+  // Initialize GraphDL parser
+  console.log('\n🔧 Initializing GraphDL parser...')
+  const parser = await getGraphDLParser()
+  console.log('  ✅ Parser initialized')
+
   // ========== Work Domain ==========
   console.log('\n📊 Work Domain')
-  console.log('─'.repeat(40))
+  console.log('─'.repeat(50))
 
   const roles = generateRoles()
   const competencies = generateCompetencies()
-  const tasks = generateTasks()
+  const tasks = await generateTasks(parser)
   const { actions, events, taskActionRels, actionEventRels } =
-    generateActionsAndEvents(tasks)
+    await generateActionsAndEvents(tasks, parser)
 
-  writeTSV(
-    path.join(OUTPUT_DIR, 'Roles.tsv'),
-    roles.map(entityToRecord)
-  )
-  writeTSV(
-    path.join(OUTPUT_DIR, 'Competencies.tsv'),
-    competencies.map(entityToRecord)
-  )
-  writeTSV(
-    path.join(OUTPUT_DIR, 'Tasks.tsv'),
-    tasks.map(entityToRecord)
-  )
-  writeTSV(
-    path.join(OUTPUT_DIR, 'Actions.tsv'),
-    actions.map(entityToRecord)
-  )
-  writeTSV(
-    path.join(OUTPUT_DIR, 'Events.tsv'),
-    events.map(entityToRecord)
-  )
+  writeTSV(path.join(OUTPUT_DIR, 'Roles.tsv'), roles.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Competencies.tsv'), competencies.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Tasks.tsv'), tasks.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Actions.tsv'), actions.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Events.tsv'), events.map(entityToRecord))
 
-  writeTSV(
-    path.join(OUTPUT_REL_DIR, 'Tasks.Actions.tsv'),
-    dedupeRelationships(taskActionRels)
-  )
-  writeTSV(
-    path.join(OUTPUT_REL_DIR, 'Actions.Events.tsv'),
-    dedupeRelationships(actionEventRels)
-  )
+  writeTSV(path.join(OUTPUT_REL_DIR, 'Tasks.Actions.tsv'), dedupeRelationships(taskActionRels))
+  writeTSV(path.join(OUTPUT_REL_DIR, 'Actions.Events.tsv'), dedupeRelationships(actionEventRels))
 
   // ========== Business Domain ==========
   console.log('\n📊 Business Domain')
-  console.log('─'.repeat(40))
+  console.log('─'.repeat(50))
 
   const industries = generateIndustries()
   const processes = generateProcesses()
   const products = generateProducts()
   const services = generateServices()
 
-  writeTSV(
-    path.join(OUTPUT_DIR, 'Industries.tsv'),
-    industries.map(entityToRecord)
-  )
-  writeTSV(
-    path.join(OUTPUT_DIR, 'Processes.tsv'),
-    processes.map(entityToRecord)
-  )
-  writeTSV(
-    path.join(OUTPUT_DIR, 'Products.tsv'),
-    products.map(entityToRecord)
-  )
-  writeTSV(
-    path.join(OUTPUT_DIR, 'Services.tsv'),
-    services.map(entityToRecord)
-  )
+  writeTSV(path.join(OUTPUT_DIR, 'Industries.tsv'), industries.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Processes.tsv'), processes.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Products.tsv'), products.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Services.tsv'), services.map(entityToRecord))
 
   // ========== Geography Domain ==========
   console.log('\n📊 Geography Domain')
-  console.log('─'.repeat(40))
+  console.log('─'.repeat(50))
 
   const locations = generateLocations()
-  writeTSV(
-    path.join(OUTPUT_DIR, 'Locations.tsv'),
-    locations.map(entityToRecord)
-  )
+  writeTSV(path.join(OUTPUT_DIR, 'Locations.tsv'), locations.map(entityToRecord))
 
   // ========== Summary ==========
   console.log('\n📈 Summary')
-  console.log('─'.repeat(40))
+  console.log('─'.repeat(50))
   console.log(`  Roles:        ${roles.length}`)
   console.log(`  Competencies: ${competencies.length}`)
   console.log(`  Tasks:        ${tasks.length}`)

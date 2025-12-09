@@ -1,0 +1,760 @@
+# Business Concept Generation
+
+This workflow generates ~1M business concepts through systematic cartesian products and permutations of curated business taxonomies.
+
+## Data Sources
+
+Our taxonomies are curated supersets from authoritative standards:
+
+| Taxonomy | Sources | Description |
+|----------|---------|-------------|
+| **Industries** | NAICS, SIC, GICS | Economic sectors and sub-sectors |
+| **Occupations** | ONET, BLS SOC | Job roles and career families |
+| **Tasks** | ONET Task Statements | Work activities performed by roles |
+| **Activities** | ONET DWA, APQC | Detailed work activities |
+| **Processes** | APQC PCF | Business process hierarchies |
+| **Departments** | Common org structures | Functional business units |
+| **Tech** | W3C, IANA, ISO | Technology standards |
+| **Tools** | Software categories | Business software and platforms |
+| **Products** | UNSPSC, GS1 | Physical goods and commodities |
+| **Services** | NAPCS | Service offerings |
+
+---
+
+## Core Abstractions
+
+The generation system uses a declarative, functional approach. Just pass the dimensions you want to combine:
+
+```ts script
+import {
+  industries,
+  occupations,
+  tasks,
+  activities,
+  processes,
+  departments,
+  tech,
+  tools,
+  products,
+  services,
+} from 'business.org.ai'
+
+// =============================================================================
+// FOUNDATIONAL TYPES
+// =============================================================================
+
+/**
+ * DimensionSet is the input shape - a record of named string arrays.
+ * This is what you pass to generator functions.
+ */
+type DimensionSet = Record<string, readonly string[]>
+
+/**
+ * A Concept is a single point in the cartesian space,
+ * with the same keys as the input dimensions.
+ */
+type Concept<D extends DimensionSet> = {
+  [K in keyof D]: D[K][number]
+}
+
+/**
+ * ConceptSpace is the returned iterable with metadata and utilities.
+ */
+type ConceptSpace<D extends DimensionSet> = Iterable<Concept<D>> & {
+  readonly dimensions: D
+  readonly keys: (keyof D)[]
+  readonly cardinality: bigint
+  nth(n: bigint): Concept<D>
+  sample(n: number, seed?: number): Generator<Concept<D>>
+  where(predicate: (c: Concept<D>) => boolean): ConceptSpace<D>
+  map<T>(fn: (c: Concept<D>) => T): Iterable<T>
+  take(n: number): Generator<Concept<D>>
+}
+```
+
+---
+
+## The Generator Functions
+
+Each generator takes a `DimensionSet` and returns a lazy `ConceptSpace`:
+
+```ts script
+// =============================================================================
+// CARTESIAN PRODUCT - THE CORE PRIMITIVE
+// =============================================================================
+
+/**
+ * Lazily generates the cartesian product of arrays.
+ * This is the foundational primitive - everything else builds on this.
+ *
+ * @example
+ * // Raw cartesian product yields tuples
+ * for (const [a, b] of cartesian(['x', 'y'], [1, 2, 3])) {
+ *   console.log(a, b) // 'x' 1, 'x' 2, 'x' 3, 'y' 1, ...
+ * }
+ */
+function* cartesian<T extends readonly (readonly unknown[])[]>(
+  ...arrays: T
+): Generator<{ [K in keyof T]: T[K][number] }> {
+  if (arrays.length === 0) {
+    yield [] as any
+    return
+  }
+
+  const indices = new Array(arrays.length).fill(0)
+  const lengths = arrays.map(a => a.length)
+
+  while (true) {
+    // Build current tuple
+    yield arrays.map((arr, i) => arr[indices[i]]) as any
+
+    // Increment indices (odometer style)
+    let i = arrays.length - 1
+    while (i >= 0) {
+      indices[i]++
+      if (indices[i] < lengths[i]) break
+      indices[i] = 0
+      i--
+    }
+    if (i < 0) return
+  }
+}
+
+/**
+ * Get the nth element of a cartesian product without iteration.
+ * O(k) where k = number of arrays.
+ */
+function nthCartesian<T extends readonly (readonly unknown[])[]>(
+  n: bigint,
+  ...arrays: T
+): { [K in keyof T]: T[K][number] } {
+  const result: unknown[] = []
+  let remaining = n
+
+  for (let i = arrays.length - 1; i >= 0; i--) {
+    const arr = arrays[i]
+    const len = BigInt(arr.length)
+    const index = remaining % len
+    remaining = remaining / len
+    result.unshift(arr[Number(index)])
+  }
+
+  return result as any
+}
+
+/**
+ * Calculate cardinality of a cartesian product.
+ */
+function cardinalityOf(...arrays: readonly (readonly unknown[])[]): bigint {
+  return arrays.reduce((acc, arr) => acc * BigInt(arr.length), 1n)
+}
+
+// =============================================================================
+// CONCEPTS - NAMED CARTESIAN PRODUCTS
+// =============================================================================
+
+/**
+ * Wraps cartesian product with named keys.
+ * This is the main API for business concept generation.
+ *
+ * @example
+ * const space = concepts({ department: departments, service: services })
+ * for (const c of space) {
+ *   console.log(c.department, c.service) // typed access
+ * }
+ */
+function concepts<D extends DimensionSet>(dimensions: D): ConceptSpace<D> {
+  const keys = Object.keys(dimensions) as (keyof D)[]
+  const arrays = keys.map(k => dimensions[k])
+  const cardinality = cardinalityOf(...arrays)
+
+  // Convert tuple to named object
+  const toObject = (tuple: unknown[]): Concept<D> => {
+    const obj = {} as Concept<D>
+    for (let i = 0; i < keys.length; i++) {
+      obj[keys[i]] = tuple[i] as any
+    }
+    return obj
+  }
+
+  function* generate(): Generator<Concept<D>> {
+    for (const tuple of cartesian(...arrays)) {
+      yield toObject(tuple as unknown[])
+    }
+  }
+
+  const nth = (n: bigint): Concept<D> =>
+    toObject(nthCartesian(n, ...arrays) as unknown[])
+
+  function* sample(n: number, seed?: number): Generator<Concept<D>> {
+    const rng = prng(seed)
+    for (let i = 0; i < n; i++) {
+      const index = BigInt(Math.floor(rng() * Number(cardinality)))
+      yield nth(index)
+    }
+  }
+
+  const where = (predicate: (c: Concept<D>) => boolean): ConceptSpace<D> =>
+    makeSpace(dimensions, function* () {
+      for (const c of generate()) {
+        if (predicate(c)) yield c
+      }
+    })
+
+  return {
+    dimensions,
+    keys,
+    cardinality,
+    [Symbol.iterator]: generate,
+    nth,
+    sample,
+    where,
+    map: function* <T>(fn: (c: Concept<D>) => T) {
+      for (const c of generate()) yield fn(c)
+    },
+    take: function* (n: number) {
+      let count = 0
+      for (const c of generate()) {
+        if (count++ >= n) return
+        yield c
+      }
+    },
+  }
+}
+
+// Helper for filtered/derived spaces
+function makeSpace<D extends DimensionSet>(
+  dimensions: D,
+  generator: () => Generator<Concept<D>>
+): ConceptSpace<D> {
+  const keys = Object.keys(dimensions) as (keyof D)[]
+  const arrays = keys.map(k => dimensions[k])
+
+  return {
+    dimensions,
+    keys,
+    cardinality: cardinalityOf(...arrays), // theoretical, not filtered
+    [Symbol.iterator]: generator,
+    nth: () => { throw new Error('nth() not supported on filtered spaces') },
+    sample: () => { throw new Error('sample() not supported on filtered spaces') },
+    where: (pred) => makeSpace(dimensions, function* () {
+      for (const c of generator()) if (pred(c)) yield c
+    }),
+    map: function* (fn) { for (const c of generator()) yield fn(c) },
+    take: function* (n) {
+      let count = 0
+      for (const c of generator()) {
+        if (count++ >= n) return
+        yield c
+      }
+    },
+  }
+}
+
+// Simple seedable PRNG
+function prng(seed?: number): () => number {
+  let state = seed ?? Date.now()
+  return () => {
+    state = (state * 1103515245 + 12345) & 0x7fffffff
+    return state / 0x7fffffff
+  }
+}
+```
+
+---
+
+## Semantic Generators
+
+Higher-level generators for specific business concept types:
+
+```ts script
+// =============================================================================
+// SEMANTIC GENERATORS
+// =============================================================================
+
+/**
+ * Services offered by departments within industries.
+ * "What services does this department provide in this industry?"
+ */
+const offerings = (dims: {
+  industries?: typeof industries
+  departments?: typeof departments
+  services?: typeof services
+}) => concepts({
+  industry: dims.industries ?? industries,
+  department: dims.departments ?? departments,
+  service: dims.services ?? services,
+})
+
+/**
+ * Roles performing tasks.
+ * "What does this role do?"
+ */
+const capabilities = (dims: {
+  occupations?: typeof occupations
+  tasks?: typeof tasks
+}) => concepts({
+  occupation: dims.occupations ?? occupations,
+  task: dims.tasks ?? tasks,
+})
+
+/**
+ * Industry-specific role capabilities.
+ * "What does this role do in this industry?"
+ */
+const industryCapabilities = (dims: {
+  industries?: typeof industries
+  occupations?: typeof occupations
+  tasks?: typeof tasks
+}) => concepts({
+  industry: dims.industries ?? industries,
+  occupation: dims.occupations ?? occupations,
+  task: dims.tasks ?? tasks,
+})
+
+/**
+ * Process workflows within departments.
+ * "How does this department execute this process?"
+ */
+const workflows = (dims: {
+  departments?: typeof departments
+  processes?: typeof processes
+  activities?: typeof activities
+}) => concepts({
+  department: dims.departments ?? departments,
+  process: dims.processes ?? processes,
+  activity: dims.activities ?? activities,
+})
+
+/**
+ * Technology stacks for roles.
+ * "What technology does this role use?"
+ */
+const stacks = (dims: {
+  occupations?: typeof occupations
+  tech?: typeof tech
+  tools?: typeof tools
+}) => concepts({
+  occupation: dims.occupations ?? occupations,
+  technology: dims.tech ?? tech,
+  tool: dims.tools ?? tools,
+})
+
+/**
+ * Market offerings by industry.
+ * "What products and services does this industry offer?"
+ */
+const markets = (dims: {
+  industries?: typeof industries
+  products?: typeof products
+  services?: typeof services
+}) => concepts({
+  industry: dims.industries ?? industries,
+  product: dims.products ?? products,
+  service: dims.services ?? services,
+})
+
+/**
+ * Full business operations.
+ * The complete operational context.
+ */
+const operations = (dims: Partial<{
+  industries: typeof industries
+  occupations: typeof occupations
+  tasks: typeof tasks
+  activities: typeof activities
+  processes: typeof processes
+  departments: typeof departments
+  tech: typeof tech
+  tools: typeof tools
+  products: typeof products
+  services: typeof services
+}>) => concepts({
+  industry: dims.industries ?? industries,
+  occupation: dims.occupations ?? occupations,
+  task: dims.tasks ?? tasks,
+  activity: dims.activities ?? activities,
+  process: dims.processes ?? processes,
+  department: dims.departments ?? departments,
+  technology: dims.tech ?? tech,
+  tool: dims.tools ?? tools,
+  product: dims.products ?? products,
+  service: dims.services ?? services,
+})
+```
+
+---
+
+## Constraints & Filters
+
+Filter the concept space using predicates:
+
+```ts script
+// =============================================================================
+// CONSTRAINT HELPERS
+// =============================================================================
+
+/**
+ * Create a relationship constraint from known valid pairs.
+ * Uses a Set for O(1) lookup.
+ */
+const pairs = <A extends string, B extends string>(
+  validPairs: Array<[A, B]>
+) => {
+  const set = new Set(validPairs.map(([a, b]) => `${a}::${b}`))
+  return (a: A, b: B) => set.has(`${a}::${b}`)
+}
+
+/**
+ * Create a hierarchy constraint.
+ * Child must have a valid parent.
+ */
+const hierarchy = <T extends string>(
+  parentMap: Record<T, T | null>
+) => {
+  return (child: T, parent: T) => parentMap[child] === parent
+}
+
+/**
+ * Compose multiple predicates with AND logic.
+ */
+const all = <T>(...predicates: Array<(x: T) => boolean>) =>
+  (x: T) => predicates.every(p => p(x))
+
+/**
+ * Compose multiple predicates with OR logic.
+ */
+const any = <T>(...predicates: Array<(x: T) => boolean>) =>
+  (x: T) => predicates.some(p => p(x))
+
+/**
+ * Negate a predicate.
+ */
+const not = <T>(predicate: (x: T) => boolean) =>
+  (x: T) => !predicate(x)
+```
+
+---
+
+## Usage Examples
+
+### Basic Usage
+
+```ts script
+// Generate all department-service combinations
+for (const c of concepts({ department: departments, service: services })) {
+  console.log(`${c.department} → ${c.service}`)
+}
+
+// With subset of dimensions
+const techServices = concepts({
+  department: ['Engineering', 'IT', 'Product'],
+  service: services.filter(s => s.includes('Software')),
+})
+
+for (const c of techServices.take(10)) {
+  console.log(c)
+}
+```
+
+### Sampling Large Spaces
+
+```ts script
+// Space is too large to enumerate
+const fullSpace = concepts({
+  industry: industries,
+  occupation: occupations,
+  task: tasks,
+})
+
+console.log(`Total combinations: ${fullSpace.cardinality}`)
+
+// Sample 1000 random concepts
+for (const c of fullSpace.sample(1000, 42)) {
+  console.log(`${c.occupation} in ${c.industry}: ${c.task}`)
+}
+
+// Or get specific indices
+const concept42 = fullSpace.nth(42n)
+const conceptMillion = fullSpace.nth(1_000_000n)
+```
+
+### Filtered Spaces
+
+```ts script
+// Load relationship data
+const validOccupationTasks = pairs([
+  ['SoftwareDeveloper', 'WriteCode'],
+  ['SoftwareDeveloper', 'ReviewCode'],
+  ['ProjectManager', 'PlanProject'],
+  // ... loaded from Occupations.Tasks.tsv
+])
+
+// Filter to only valid combinations
+const validCapabilities = capabilities({})
+  .where(c => validOccupationTasks(c.occupation, c.task))
+
+for (const c of validCapabilities) {
+  console.log(`${c.occupation} performs ${c.task}`)
+}
+```
+
+### Chaining Operations
+
+```ts script
+// Build a pipeline
+const results = concepts({
+  industry: industries,
+  department: departments,
+  tool: tools,
+})
+  .where(c => c.department === 'Engineering')
+  .where(c => c.tool.includes('Cloud'))
+  .map(c => ({
+    key: `${c.industry}:${c.tool}`,
+    label: `${c.tool} in ${c.industry}`,
+  }))
+
+for (const r of results) {
+  console.log(r.label)
+}
+```
+
+---
+
+## Output Formatters
+
+Transform concepts into various formats:
+
+```ts script
+// =============================================================================
+// OUTPUT FORMATTERS
+// =============================================================================
+
+/**
+ * Format as TSV row.
+ */
+const toTSV = <D extends DimensionSet>(c: Concept<D>, keys: (keyof D)[]) =>
+  keys.map(k => c[k]).join('\t')
+
+/**
+ * Format as URL path.
+ */
+const toPath = <D extends DimensionSet>(c: Concept<D>) =>
+  Object.entries(c)
+    .map(([k, v]) => `/${k}/${encodeURIComponent(v as string)}`)
+    .join('')
+
+/**
+ * Format as semantic ID.
+ */
+const toID = <D extends DimensionSet>(c: Concept<D>) =>
+  Object.values(c).join('.')
+
+/**
+ * Format as natural language.
+ */
+const toSentence = (c: Concept<any>) => {
+  const parts: string[] = []
+  if (c.occupation) parts.push(`A ${c.occupation}`)
+  if (c.industry) parts.push(`in ${c.industry}`)
+  if (c.department) parts.push(`(${c.department} dept)`)
+  if (c.task) parts.push(`performs "${c.task}"`)
+  if (c.activity) parts.push(`via ${c.activity}`)
+  if (c.process) parts.push(`within ${c.process}`)
+  if (c.tool) parts.push(`using ${c.tool}`)
+  if (c.technology) parts.push(`on ${c.technology}`)
+  if (c.product) parts.push(`producing ${c.product}`)
+  if (c.service) parts.push(`delivering ${c.service}`)
+  return parts.join(' ')
+}
+```
+
+---
+
+## Batch Generation
+
+For generating large datasets:
+
+```ts script
+// =============================================================================
+// BATCH GENERATION
+// =============================================================================
+
+/**
+ * Generate in batches with callbacks for streaming output.
+ */
+async function generateBatched<D extends DimensionSet>(
+  space: ConceptSpace<D>,
+  batchSize: number,
+  onBatch: (batch: Concept<D>[], index: number) => Promise<void>
+): Promise<{ total: number; batches: number }> {
+  let batch: Concept<D>[] = []
+  let batchIndex = 0
+  let total = 0
+
+  for (const concept of space) {
+    batch.push(concept)
+    total++
+
+    if (batch.length >= batchSize) {
+      await onBatch(batch, batchIndex++)
+      batch = []
+    }
+  }
+
+  if (batch.length > 0) {
+    await onBatch(batch, batchIndex++)
+  }
+
+  return { total, batches: batchIndex }
+}
+
+/**
+ * Write to TSV file in batches.
+ */
+async function toTSVFile<D extends DimensionSet>(
+  space: ConceptSpace<D>,
+  path: string,
+  batchSize = 10_000
+) {
+  const keys = space.keys
+  const header = keys.join('\t')
+
+  // Write header
+  await Bun.write(path, header + '\n')
+
+  await generateBatched(space, batchSize, async (batch) => {
+    const rows = batch.map(c => toTSV(c, keys)).join('\n')
+    await Bun.write(path, rows + '\n', { append: true })
+  })
+}
+```
+
+---
+
+## Cardinality Analysis
+
+Understanding the scale of your concept space:
+
+```ts script
+// =============================================================================
+// CARDINALITY ANALYSIS
+// =============================================================================
+
+/**
+ * Format large numbers for humans.
+ */
+const formatNumber = (n: bigint): string => {
+  if (n < 1_000n) return n.toString()
+  if (n < 1_000_000n) return `${(Number(n) / 1_000).toFixed(1)}K`
+  if (n < 1_000_000_000n) return `${(Number(n) / 1_000_000).toFixed(1)}M`
+  if (n < 1_000_000_000_000n) return `${(Number(n) / 1_000_000_000).toFixed(1)}B`
+  return `${(Number(n) / 1_000_000_000_000).toFixed(1)}T`
+}
+
+/**
+ * Analyze a concept space.
+ */
+const analyze = <D extends DimensionSet>(space: ConceptSpace<D>) => {
+  const dims = Object.entries(space.dimensions).map(([name, values]) => ({
+    name,
+    count: values.length,
+  }))
+
+  return {
+    dimensions: dims,
+    totalCombinations: space.cardinality,
+    formatted: formatNumber(space.cardinality),
+    breakdown: dims.map(d => `${d.name}: ${d.count}`).join(' × '),
+  }
+}
+
+// Example analysis
+const report = analyze(concepts({
+  industry: industries,
+  occupation: occupations,
+  task: tasks,
+}))
+
+console.log(`
+Space Analysis:
+${report.breakdown}
+= ${report.formatted} combinations
+`)
+```
+
+---
+
+## Path to ~1M Concepts
+
+Strategies for hitting the target:
+
+| Approach | Dimensions | Formula | Target |
+|----------|------------|---------|--------|
+| **2D High Cardinality** | `occupation × task` | 1K × 21K | ~21M → sample 1M |
+| **2D with Filter** | `industry × occupation` | 2K × 1K × 0.5 | ~1M |
+| **3D Constrained** | `industry × occupation × task` | 2K × 1K × 21K × 0.002% | ~1M |
+| **Hierarchical** | sector → group → detail | 20 + 100K + 1M | ~1.1M |
+
+```ts script
+// Strategy 1: Sample from large 2D space
+const strategy1 = capabilities({}).sample(1_000_000, 42)
+
+// Strategy 2: Filter 2D space
+const strategy2 = concepts({
+  industry: industries,
+  occupation: occupations,
+}).where(c => isPrevalent(c.industry, c.occupation))
+
+// Strategy 3: Constrained 3D
+const strategy3 = industryCapabilities({})
+  .where(c => validIndustryOccupation(c.industry, c.occupation))
+  .where(c => validOccupationTask(c.occupation, c.task))
+
+// Strategy 4: Multi-level union
+function* hierarchical() {
+  // Level 1: Broad concepts (sectors × families)
+  yield* concepts({
+    sector: industries.slice(0, 20),
+    family: occupations.slice(0, 23),
+  })
+
+  // Level 2: Mid-level (groups × occupations)
+  yield* concepts({
+    group: industries.slice(0, 100),
+    occupation: occupations,
+  })
+
+  // Level 3: Detailed (constrained full)
+  yield* industryCapabilities({}).where(isValid).take(900_000)
+}
+```
+
+---
+
+## Summary
+
+The declarative API makes it simple to generate business concepts:
+
+```ts script
+// Simple and readable
+const space = concepts({ department: departments, service: services })
+
+// Semantic generators for common patterns
+const caps = capabilities({ occupations, tasks })
+const offers = offerings({ industries, departments, services })
+
+// Filter with predicates
+const valid = caps.where(c => isValidPair(c.occupation, c.task))
+
+// Transform output
+const ids = valid.map(toID)
+
+// Sample or iterate
+for (const c of space.sample(1000)) { /* ... */ }
+for (const c of space.take(100)) { /* ... */ }
+for (const c of space) { /* ... */ }
+```
+
+The key insight: **start with the dimensions you need, let the types flow, filter lazily**.
