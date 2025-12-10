@@ -1363,12 +1363,27 @@ function generateLocationTypes(): AbstractLocationType[] {
 
 /**
  * Convert text to camelCase ID (for attributes/properties)
+ * Handles slashes, spaces, and other separators properly
  */
 function toCamelCase(text: string): string {
   if (!text) return ''
-  const pascal = toPascalCase(text)
-  if (!pascal) return ''
-  return pascal.charAt(0).toLowerCase() + pascal.slice(1)
+  // Split on common separators: space, slash, hyphen, underscore
+  const words = text
+    .replace(/[^\w\s\-\/]/g, '')
+    .split(/[\s\-\_\/]+/)
+    .filter((w) => w.length > 0)
+
+  if (words.length === 0) return ''
+
+  // First word lowercase, rest title case
+  return words
+    .map((w, i) => {
+      if (i === 0) {
+        return w.toLowerCase()
+      }
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+    })
+    .join('')
 }
 
 function generateProductAttributes(): AbstractProductAttribute[] {
