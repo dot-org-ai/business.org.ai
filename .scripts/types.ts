@@ -129,11 +129,17 @@ export interface AbstractEvent extends Entity {
 
 /**
  * Abstract Activity - hierarchical work activities (WorkActivity → IWA → DWA)
+ * Now uses GraphDL semantic format: verb.Object
  */
 export interface AbstractActivity extends HierarchicalEntity {
   type: 'Activity'
   category: 'WorkActivity' | 'IWA' | 'DWA' // IWA = Intermediate, DWA = Detailed
   sourceType: string
+  // GraphDL semantic components
+  verb?: string
+  object?: string
+  preposition?: string
+  prepObject?: string
 }
 
 /**
@@ -269,6 +275,8 @@ export interface AbstractTech extends Entity {
   category?: string // Software category from UNSPSC
   sourceType: string
   unspscCode?: string // UNSPSC commodity code
+  acronym?: string // Acronym extracted from name (e.g., "ERP" from "Enterprise resource planning ERP software")
+  sameAs?: string // ID of the related entry (links acronym to full name)
 }
 
 /**
@@ -387,6 +395,21 @@ export interface AbstractSICIndustry extends HierarchicalEntity {
 }
 
 // ============================================================================
+// Abstract Interfaces - Semantic Concepts
+// ============================================================================
+
+/**
+ * Abstract Concept - objects/entities extracted from Tasks and Processes
+ * These are the noun phrases that appear as objects in verb.Object patterns
+ */
+export interface AbstractConcept extends Entity {
+  type: 'Concept'
+  sourceType: string // Where this concept was extracted from (Task, Process, etc.)
+  sourceTasks?: string[] // IDs of tasks that reference this concept
+  sourceProcesses?: string[] // IDs of processes that reference this concept
+}
+
+// ============================================================================
 // Unified Domain Types
 // ============================================================================
 
@@ -498,6 +521,9 @@ export const NAMESPACES = {
   // Technology Domain
   tech: 'tech.org.ai',
   tools: 'tools.org.ai',
+
+  // Semantic Domain
+  concepts: 'concepts.org.ai',
 
   // Geography Domain
   locations: 'locations.org.ai',

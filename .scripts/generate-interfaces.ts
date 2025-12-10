@@ -43,6 +43,7 @@ import {
   AbstractWorkValue,
   AbstractInterest,
   AbstractMerchantCategory,
+  AbstractConcept,
   NAMESPACES,
 } from './types.js'
 import { GraphDLParser, ParsedStatement, NounPhraseExpander } from '../graphdl/dist/index.js'
@@ -130,6 +131,222 @@ function toPascalCase(text: string): string {
     .filter((w) => w.length > 0)
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join('')
+}
+
+// Common acronyms that should stay uppercase
+const ACRONYMS = new Set([
+  'IT', 'HR', 'ERP', 'CRM', 'API', 'B2B', 'B2C', 'CEO', 'CFO', 'CIO', 'COO',
+  'EHS', 'EPA', 'FDA', 'GAAP', 'GDP', 'GHG', 'HIPAA', 'HQ', 'HSE', 'IoT',
+  'IP', 'IPO', 'ISO', 'KPI', 'MRP', 'OSHA', 'PCI', 'PM', 'PO', 'PR',
+  'QA', 'QC', 'RFI', 'RFP', 'RFQ', 'ROI', 'SaaS', 'SCM', 'SLA',
+  'SME', 'SOX', 'SQL', 'SRM', 'UI', 'UX', 'VAT', 'VPN', 'WIP', 'XML',
+  'AP', 'AR', 'GL', 'POS', 'SKU', 'UPC', 'EQMS', 'EMS', 'QMS',
+])
+
+/**
+ * Extract acronym from technology/software names
+ * Patterns supported:
+ * 1. "Enterprise resource planning ERP software" -> { fullName: "Enterprise resource planning software", acronym: "ERP" }
+ * 2. "Human resource information system (HRIS)" -> { fullName: "Human resource information system", acronym: "HRIS" }
+ * 3. "Amazon Web Services AWS software" -> { fullName: "Amazon Web Services software", acronym: "AWS" }
+ * 4. "Cascading style sheets CSS" -> { fullName: "Cascading style sheets", acronym: "CSS" }
+ */
+function extractAcronym(name: string): { fullName: string; acronym: string | null } {
+  if (!name) return { fullName: name, acronym: null }
+
+  // Pattern 1: Acronym in parentheses - e.g., "Human resource information system (HRIS)"
+  const parenMatch = name.match(/^(.+?)\s*\(([A-Z]{2,10})\)\s*(.*)$/)
+  if (parenMatch) {
+    const fullName = (parenMatch[1] + ' ' + parenMatch[3]).trim()
+    return { fullName, acronym: parenMatch[2] }
+  }
+
+  // Pattern 2: Acronym embedded before "software/system/systems"
+  // e.g., "Enterprise resource planning ERP software"
+  const embeddedMatch = name.match(/^(.+?)\s+([A-Z]{2,10})\s+(software|system|systems|application|applications)$/i)
+  if (embeddedMatch) {
+    const fullName = `${embeddedMatch[1]} ${embeddedMatch[3]}`
+    return { fullName, acronym: embeddedMatch[2] }
+  }
+
+  // Pattern 3: Acronym at end - e.g., "Cascading style sheets CSS" or "Management information systems MIS"
+  const endMatch = name.match(/^(.+?)\s+([A-Z]{2,10})$/)
+  if (endMatch) {
+    // Make sure it's not a normal word (check if all uppercase)
+    const potentialAcronym = endMatch[2]
+    if (potentialAcronym === potentialAcronym.toUpperCase() && potentialAcronym.length >= 2) {
+      return { fullName: endMatch[1], acronym: potentialAcronym }
+    }
+  }
+
+  // Pattern 4: Acronym in the middle - e.g., "Computer aided design CAD software"
+  const middleMatch = name.match(/^(.+?)\s+([A-Z]{2,10})\s+(\w+.*)$/i)
+  if (middleMatch) {
+    const potentialAcronym = middleMatch[2]
+    // Verify it's an acronym (all uppercase, 2-10 chars)
+    if (potentialAcronym === potentialAcronym.toUpperCase() && potentialAcronym.length >= 2) {
+      const fullName = `${middleMatch[1]} ${middleMatch[3]}`
+      return { fullName, acronym: potentialAcronym }
+    }
+  }
+
+  return { fullName: name, acronym: null }
+}
+
+// Words that should NOT be part of concept IDs
+const SKIP_CONCEPT_WORDS = new Set([
+  'to', 'for', 'with', 'from', 'in', 'on', 'at', 'by', 'of',
+  'the', 'a', 'an', 'this', 'that', 'these', 'those',
+  'and', 'or', 'but', 'nor',
+  'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'has', 'have', 'had', 'having',
+  'do', 'does', 'did', 'doing', 'done',
+  'will', 'would', 'shall', 'should', 'may', 'might', 'must', 'can', 'could',
+  'if', 'then', 'else', 'when', 'where', 'which', 'who', 'whom', 'whose',
+  'all', 'any', 'both', 'each', 'every', 'few', 'many', 'most', 'no', 'none',
+  'other', 'some', 'such',
+])
+
+/**
+ * Clean a concept ID by removing conjunctions and verbs
+ * Used for task objects that might contain unexpanded conjunctions
+ * e.g., "ReviewOrApproveProjectDesignChanges" -> "ProjectDesignChanges"
+ */
+function cleanConceptId(conceptId: string): string | undefined {
+  if (!conceptId || conceptId.length < 3) return undefined
+
+  // Check if it contains conjunctions in the middle
+  const conjMatch = conceptId.match(/^(.+?)(And|Or)([A-Z].+)$/i)
+  if (conjMatch) {
+    // Take the part after the conjunction as it's likely the actual object
+    // e.g., "ReviewOrApproveProjectDesignChanges" -> take "ProjectDesignChanges"
+    const afterConj = conjMatch[3]
+
+    // But we might have nested conjunctions, so recurse
+    const cleaned = cleanConceptId(afterConj)
+    return cleaned || afterConj
+  }
+
+  // Remove leading verb patterns
+  // e.g., "DetermineNeeds" -> should check if "Determine" is a verb
+  const words = conceptId.match(/[A-Z][a-z]*/g) || []
+  if (words.length >= 2) {
+    const firstWord = words[0].toLowerCase()
+    const isLikelyVerb = COMMON_VERBS.has(firstWord)
+    if (isLikelyVerb) {
+      // Skip the verb and return the rest
+      const rest = words.slice(1).join('')
+      if (rest.length >= 3) {
+        return cleanConceptId(rest) || rest
+      }
+    }
+  }
+
+  // Skip if still contains conjunctions
+  if (/[a-z](And|Or)[A-Z]/.test(conceptId)) return undefined
+
+  // Skip if too short or too long
+  if (conceptId.length < 3 || conceptId.length > 60) return undefined
+
+  return conceptId
+}
+
+// Common verbs that shouldn't be in concept names
+const COMMON_VERBS = new Set([
+  'review', 'approve', 'manage', 'develop', 'create', 'ensure', 'establish',
+  'implement', 'maintain', 'monitor', 'analyze', 'assess', 'build', 'conduct',
+  'coordinate', 'define', 'deliver', 'design', 'determine', 'direct', 'evaluate',
+  'execute', 'identify', 'improve', 'integrate', 'lead', 'optimize', 'perform',
+  'plan', 'prepare', 'provide', 'report', 'resolve', 'support', 'track', 'update',
+  'align', 'allocate', 'communicate', 'configure', 'control', 'document', 'enforce',
+  'facilitate', 'generate', 'govern', 'guide', 'handle', 'initiate', 'inspect',
+  'install', 'investigate', 'measure', 'negotiate', 'obtain', 'organize', 'oversee',
+  'process', 'produce', 'promote', 'protect', 'recommend', 'record', 'reduce',
+  'refine', 'register', 'regulate', 'remediate', 'remove', 'repair', 'replace',
+  'request', 'research', 'respond', 'restore', 'retrieve', 'revise', 'schedule',
+  'secure', 'select', 'set', 'share', 'specify', 'standardize', 'store', 'submit',
+  'supervise', 'test', 'train', 'transfer', 'transform', 'validate', 'verify',
+  'administer', 'restart', 'foster',
+])
+
+/**
+ * Extract a clean concept ID from a complement string
+ * Handles complex patterns like:
+ * - "ExpectedOperations to identify DevelopmentOpportunities" -> "ExpectedOperations"
+ * - "to raise capital" -> "Capital"
+ * - "or investment activities" -> "InvestmentActivities"
+ * - "organizations to maximize returns" -> "Organizations"
+ */
+function extractConceptFromComplement(complement: string): string | undefined {
+  if (!complement) return undefined
+
+  // Clean up the text
+  let text = complement.trim()
+
+  // Skip if too short
+  if (text.length < 2) return undefined
+
+  // Remove leading prepositions and conjunctions
+  text = text.replace(/^(to|for|with|from|in|on|at|by|of|and|or)\s+/gi, '')
+
+  // Check if remaining text starts with an infinitive verb pattern
+  // e.g., "identify development opportunities" - skip the verb part
+  const infinitiveMatch = text.match(/^(\w+)\s+(.+)$/i)
+  if (infinitiveMatch) {
+    const [, firstWord, rest] = infinitiveMatch
+    const firstLower = firstWord.toLowerCase()
+    // Check if first word looks like a verb (common verb endings)
+    const isLikelyVerb = firstLower.endsWith('ize') || firstLower.endsWith('ate') ||
+                         firstLower.endsWith('ify') || firstLower.endsWith('ect') ||
+                         firstLower.endsWith('uce') || firstLower.endsWith('ase') ||
+                         firstLower.endsWith('ure') || firstLower.endsWith('ess') ||
+                         ['identify', 'find', 'create', 'develop', 'manage', 'ensure',
+                          'maximize', 'minimize', 'increase', 'decrease', 'improve',
+                          'maintain', 'build', 'raise', 'fund', 'address', 'achieve'].includes(firstLower)
+
+    if (isLikelyVerb) {
+      // Use the object of the infinitive verb
+      text = rest
+    }
+  }
+
+  // Split on "to + verb" patterns in the middle
+  // e.g., "organizations to maximize returns" -> "organizations"
+  const toVerbMatch = text.match(/^(.+?)\s+to\s+\w+/i)
+  if (toVerbMatch) {
+    const beforeTo = toVerbMatch[1].trim()
+    // Use the part before "to" if it's a noun phrase
+    if (beforeTo.length > 2 && !/^(and|or|the|a|an)$/i.test(beforeTo)) {
+      text = beforeTo
+    }
+  }
+
+  // Remove any remaining clause patterns
+  text = text.replace(/\s+(to|for|with|from|in|on|at|by|of|where|which|that)\s+.*/gi, '')
+
+  // Clean and convert to PascalCase
+  const words = text
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(/[\s_-]+/)
+    .filter((w) => w.length > 0 && !SKIP_CONCEPT_WORDS.has(w.toLowerCase()))
+
+  if (words.length === 0) return undefined
+
+  // Convert to PascalCase while preserving acronyms
+  const conceptId = words
+    .map((w) => {
+      const upper = w.toUpperCase()
+      if (ACRONYMS.has(upper)) return upper
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+    })
+    .join('')
+
+  // Skip if result is too short or too long
+  if (conceptId.length < 3 || conceptId.length > 60) return undefined
+
+  return conceptId
 }
 
 /**
@@ -343,12 +560,15 @@ function generateJobs(): AbstractJob[] {
   const jobs: AbstractJob[] = []
   const seen = new Set<string>()
 
-  // Helper to add job
-  function addJob(item: Record<string, string>, sourceType: string): void {
-    const name = item.name || item.id || ''
-    if (!name) return
-
-    const id = toPascalCase(name)
+  // Helper to add a single job entry
+  function addJobEntry(
+    id: string,
+    name: string,
+    description: string,
+    code: string | undefined,
+    sourceType: string,
+    acronym?: string
+  ): void {
     if (!id || seen.has(id)) return
     seen.add(id)
 
@@ -357,12 +577,38 @@ function generateJobs(): AbstractJob[] {
       type: 'Job',
       id,
       name,
-      description: item.description || '',
-      code: item.code,
-      shortName: toShortName(name),
+      description,
+      code,
+      shortName: acronym || toShortName(name),
       sourceType,
-      occupationCode: item.code, // Link to parent occupation
+      occupationCode: code, // Link to parent occupation
     })
+  }
+
+  // Helper to add job with acronym expansion
+  // "Chief Financial Officer (CFO)" -> ChiefFinancialOfficer + CFO
+  function addJob(item: Record<string, string>, sourceType: string): void {
+    const name = item.name || item.id || ''
+    if (!name) return
+
+    // Check for acronym pattern: "Full Name (ACRONYM)"
+    const acronymMatch = name.match(/^(.+?)\s*\(([A-Z]{2,})\)$/)
+
+    if (acronymMatch) {
+      const fullName = acronymMatch[1].trim()
+      const acronym = acronymMatch[2]
+
+      // Add the full name version
+      const fullId = toPascalCase(fullName)
+      addJobEntry(fullId, name, item.description || '', item.code, sourceType, acronym)
+
+      // Add the acronym version
+      addJobEntry(acronym, name, item.description || '', item.code, sourceType, acronym)
+    } else {
+      // No acronym - add as-is
+      const id = toPascalCase(name)
+      addJobEntry(id, name, item.description || '', item.code, sourceType)
+    }
   }
 
   // Load ONET Alternate Titles
@@ -423,13 +669,286 @@ function generateCompetencies(): AbstractCompetency[] {
   return competencies
 }
 
-function generateActivities(): AbstractActivity[] {
+/**
+ * Convert gerund verb to base form
+ * "Getting" -> "get", "Monitoring" -> "monitor", "Identifying" -> "identify"
+ */
+function gerundToBase(gerund: string): string {
+  const lower = gerund.toLowerCase()
+
+  // Common verbs that appear in activities - direct mapping
+  const verbMap: Record<string, string> = {
+    // Irregular/special verbs
+    being: 'be',
+    having: 'have',
+    making: 'make',
+    taking: 'take',
+    giving: 'give',
+    coming: 'come',
+    running: 'run',
+    getting: 'get',
+    setting: 'set',
+    putting: 'put',
+    cutting: 'cut',
+    sitting: 'sit',
+    beginning: 'begin',
+    swimming: 'swim',
+    winning: 'win',
+    // Common activity verbs
+    monitoring: 'monitor',
+    processing: 'process',
+    analyzing: 'analyze',
+    evaluating: 'evaluate',
+    developing: 'develop',
+    judging: 'judge',
+    using: 'use',
+    managing: 'manage',
+    organizing: 'organize',
+    scheduling: 'schedule',
+    providing: 'provide',
+    communicating: 'communicate',
+    coordinating: 'coordinate',
+    training: 'train',
+    coaching: 'coach',
+    guiding: 'guide',
+    assisting: 'assist',
+    performing: 'perform',
+    operating: 'operate',
+    controlling: 'control',
+    handling: 'handle',
+    repairing: 'repair',
+    maintaining: 'maintain',
+    inspecting: 'inspect',
+    documenting: 'document',
+    updating: 'update',
+    resolving: 'resolve',
+    staffing: 'staff',
+    establishing: 'establish',
+    interpreting: 'interpret',
+    estimating: 'estimate',
+    selling: 'sell',
+    thinking: 'think',
+    identifying: 'identify',
+    drafting: 'draft',
+    working: 'work',
+  }
+
+  if (verbMap[lower]) {
+    return verbMap[lower]
+  }
+
+  // Pattern: consonant + "ying" -> consonant + "y" (e.g., studying -> study)
+  if (lower.endsWith('ying')) {
+    return lower.slice(0, -4) + 'y'
+  }
+
+  // Pattern: doubled consonant + "ing" -> single consonant (e.g., planning -> plan)
+  const doubled = lower.match(/(.)\1ing$/)
+  if (doubled) {
+    return lower.slice(0, -4)
+  }
+
+  // Pattern: "ating" -> "ate" (e.g., communicating -> communicate)
+  if (lower.endsWith('ating')) {
+    return lower.slice(0, -3) + 'e'
+  }
+
+  // Pattern: "izing" -> "ize" (e.g., organizing -> organize)
+  if (lower.endsWith('izing')) {
+    return lower.slice(0, -3) + 'e'
+  }
+
+  // Pattern: "ting" after vowel (not doubled) -> "te" (e.g., updating -> update)
+  if (lower.endsWith('ting') && lower.length > 4) {
+    const beforeT = lower.charAt(lower.length - 5)
+    if ('aeiou'.includes(beforeT)) {
+      return lower.slice(0, -3) + 'e'
+    }
+  }
+
+  // Pattern: "sing" after vowel -> "se" (e.g., using -> use)
+  if (lower.endsWith('sing') && lower.length > 4) {
+    const beforeS = lower.charAt(lower.length - 5)
+    if ('aeiou'.includes(beforeS)) {
+      return lower.slice(0, -3) + 'e'
+    }
+  }
+
+  // Pattern: "ving" -> "ve" (e.g., resolving -> resolve)
+  if (lower.endsWith('ving')) {
+    return lower.slice(0, -3) + 'e'
+  }
+
+  // Pattern: "ging" after vowel -> "ge" (e.g., judging -> judge)
+  if (lower.endsWith('ging') && lower.length > 4) {
+    const beforeG = lower.charAt(lower.length - 5)
+    if ('aeiou'.includes(beforeG)) {
+      return lower.slice(0, -3) + 'e'
+    }
+  }
+
+  // Pattern: "cing" -> "ce" (e.g., producing -> produce)
+  if (lower.endsWith('cing')) {
+    return lower.slice(0, -3) + 'e'
+  }
+
+  // Default: just remove "ing"
+  if (lower.endsWith('ing')) {
+    return lower.slice(0, -3)
+  }
+
+  return lower
+}
+
+async function generateActivities(parser: GraphDLParser): Promise<AbstractActivity[]> {
   console.log('\n🎯 Generating Unified Activities...')
 
   const activities: AbstractActivity[] = []
   const seen = new Set<string>()
 
-  // Helper to add activity
+  // Helper to add a single activity entry
+  function addActivityEntry(
+    id: string,
+    name: string,
+    description: string,
+    code: string,
+    category: 'WorkActivity' | 'IWA' | 'DWA',
+    level: number,
+    verb: string,
+    object?: string
+  ): void {
+    if (!id || seen.has(id)) return
+    seen.add(id)
+
+    activities.push({
+      ns: NAMESPACES.activities,
+      type: 'Activity',
+      id,
+      name,
+      description,
+      code,
+      shortName: toShortName(name),
+      category,
+      sourceType: 'ONET',
+      level,
+      verb,
+      object,
+    })
+  }
+
+  // Parse activity names and expand compound patterns
+  // Returns array of {verb, object} pairs
+  function parseActivityName(name: string): Array<{ verb: string; object: string }> {
+    const results: Array<{ verb: string; object: string }> = []
+
+    // Handle slash-separated verbs first (e.g., "Documenting/Recording Information")
+    // Split into separate activities for each verb
+    const slashMatch = name.match(/^(\w+)\/(\w+)\s+(.+)$/)
+    if (slashMatch) {
+      const [, verb1, verb2, obj] = slashMatch
+      const objPascal = toPascalCase(obj)
+      results.push({ verb: gerundToBase(verb1), object: objPascal })
+      results.push({ verb: gerundToBase(verb2), object: objPascal })
+      return results
+    }
+
+    // Pattern 1: "Verb1, Verb2, and Verb3 Object" (multiple verbs, same object)
+    // e.g., "Organizing, Planning, and Prioritizing Work"
+    const multiVerbMatch = name.match(/^(\w+),\s*(\w+),?\s*and\s+(\w+)\s+(.+)$/i)
+    if (multiVerbMatch) {
+      const [, v1, v2, v3, obj] = multiVerbMatch
+      const objPascal = toPascalCase(obj)
+      results.push({ verb: gerundToBase(v1), object: objPascal })
+      results.push({ verb: gerundToBase(v2), object: objPascal })
+      results.push({ verb: gerundToBase(v3), object: objPascal })
+      return results
+    }
+
+    // Pattern 2: "Verb1 and Verb2 Object" (two verbs with AND)
+    // e.g., "Repairing and Maintaining Mechanical Equipment"
+    const twoVerbMatch = name.match(/^(\w+)\s+and\s+(\w+)\s+(.+)$/i)
+    if (twoVerbMatch) {
+      const [, v1, v2, obj] = twoVerbMatch
+      const objPascal = toPascalCase(obj)
+      results.push({ verb: gerundToBase(v1), object: objPascal })
+      results.push({ verb: gerundToBase(v2), object: objPascal })
+      return results
+    }
+
+    // Pattern 3: "Verb Object1, Object2, or Object3" (single verb, multiple objects with OR)
+    // e.g., "Monitoring Processes, Materials, or Surroundings"
+    const multiObjOrMatch = name.match(/^(\w+)\s+(.+?),\s*(.+?),?\s*or\s+(.+)$/i)
+    if (multiObjOrMatch) {
+      const [, verb, obj1, obj2, obj3] = multiObjOrMatch
+      const baseVerb = gerundToBase(verb)
+      results.push({ verb: baseVerb, object: toPascalCase(obj1) })
+      results.push({ verb: baseVerb, object: toPascalCase(obj2) })
+      results.push({ verb: baseVerb, object: toPascalCase(obj3) })
+      return results
+    }
+
+    // Pattern 4: "Verb Object1, Object2, and Object3" (single verb, multiple objects with AND)
+    // e.g., "Identifying Objects, Actions, and Events"
+    const multiObjAndMatch = name.match(/^(\w+)\s+(.+?),\s*(.+?),?\s*and\s+(.+)$/i)
+    if (multiObjAndMatch) {
+      const [, verb, obj1, obj2, obj3] = multiObjAndMatch
+      const baseVerb = gerundToBase(verb)
+      results.push({ verb: baseVerb, object: toPascalCase(obj1) })
+      results.push({ verb: baseVerb, object: toPascalCase(obj2) })
+      results.push({ verb: baseVerb, object: toPascalCase(obj3) })
+      return results
+    }
+
+    // Pattern 5: "Verb Object1 or Object2" (single verb, two objects with OR)
+    // e.g., "Analyzing Data or Information"
+    const twoObjOrMatch = name.match(/^(\w+)\s+(.+?)\s+or\s+(.+)$/i)
+    if (twoObjOrMatch) {
+      const [, verb, obj1, obj2] = twoObjOrMatch
+      const baseVerb = gerundToBase(verb)
+      results.push({ verb: baseVerb, object: toPascalCase(obj1) })
+      results.push({ verb: baseVerb, object: toPascalCase(obj2) })
+      return results
+    }
+
+    // Pattern 6: "Verb Object1 and Object2" (single verb, two objects with AND)
+    // e.g., "Making Decisions and Solving Problems" - but this is actually two verbs!
+    // Need to be careful here - check if second part starts with a gerund
+    const andMatch = name.match(/^(\w+)\s+(.+?)\s+and\s+(.+)$/i)
+    if (andMatch) {
+      const [, verb, obj1, rest] = andMatch
+      // Check if "rest" starts with a gerund (another verb)
+      const restWords = rest.split(/\s+/)
+      if (restWords[0] && restWords[0].match(/ing$/i)) {
+        // Two verb phrases: "Making Decisions" and "Solving Problems"
+        const baseVerb1 = gerundToBase(verb)
+        const baseVerb2 = gerundToBase(restWords[0])
+        const obj2 = restWords.slice(1).join(' ')
+        results.push({ verb: baseVerb1, object: toPascalCase(obj1) })
+        results.push({ verb: baseVerb2, object: toPascalCase(obj2) })
+        return results
+      } else {
+        // Single verb with two objects
+        const baseVerb = gerundToBase(verb)
+        results.push({ verb: baseVerb, object: toPascalCase(obj1) })
+        results.push({ verb: baseVerb, object: toPascalCase(rest) })
+        return results
+      }
+    }
+
+    // Default: simple "Verb Object" pattern
+    const words = name.split(/\s+/)
+    if (words.length === 0) return results
+
+    const gerundVerb = words[0].replace(/,/g, '')
+    const baseVerb = gerundToBase(gerundVerb)
+    const objectPart = words.slice(1).join(' ')
+    const objectPascal = toPascalCase(objectPart)
+
+    results.push({ verb: baseVerb, object: objectPascal })
+    return results
+  }
+
+  // Helper to add activity with expansion
   function addActivity(
     item: Record<string, string>,
     category: 'WorkActivity' | 'IWA' | 'DWA',
@@ -438,35 +957,16 @@ function generateActivities(): AbstractActivity[] {
     const name = item.name || item.id || ''
     if (!name) return
 
-    const id = toPascalCase(name)
-    if (!id || seen.has(id)) return
-    seen.add(id)
-
-    // Extract parent ID from code hierarchy
-    // WorkActivity: 4.A.1.a.1
-    // IWA: 4.A.1.a.1.I01 -> parent is 4.A.1.a.1
-    // DWA: 4.A.1.a.1.I01.D01 -> parent is 4.A.1.a.1.I01
-    let parentId: string | undefined
     const code = item.code || ''
-    if (category === 'IWA' && code.includes('.I')) {
-      const parentCode = code.split('.I')[0]
-      // We'd need to look up the parent by code, but for now leave undefined
-    } else if (category === 'DWA' && code.includes('.D')) {
-      const parentCode = code.split('.D')[0]
-    }
+    const description = item.description || ''
 
-    activities.push({
-      ns: NAMESPACES.activities,
-      type: 'Activity',
-      id,
-      name,
-      description: item.description || '',
-      code,
-      shortName: toShortName(name),
-      category,
-      sourceType: 'ONET',
-      level,
-    })
+    // Parse and expand the activity name
+    const parsed = parseActivityName(name)
+
+    for (const { verb, object } of parsed) {
+      const id = object ? `${verb}.${object}` : verb
+      addActivityEntry(id, name, description, code, category, level, verb, object || undefined)
+    }
   }
 
   // Load WorkActivities (level 1 - top level)
@@ -476,15 +976,21 @@ function generateActivities(): AbstractActivity[] {
   }
 
   // Load IWA - Intermediate Work Activities (level 2)
-  const iwaActivities = parseTSV(path.join(STANDARDS_DIR, 'ONET.IWA.tsv'))
-  for (const item of iwaActivities) {
-    addActivity(item, 'IWA', 2)
+  const iwaPath = path.join(STANDARDS_DIR, 'ONET.IntermediateWorkActivities.tsv')
+  if (fs.existsSync(iwaPath)) {
+    const iwaActivities = parseTSV(iwaPath)
+    for (const item of iwaActivities) {
+      addActivity(item, 'IWA', 2)
+    }
   }
 
   // Load DWA - Detailed Work Activities (level 3)
-  const dwaActivities = parseTSV(path.join(STANDARDS_DIR, 'ONET.DWA.tsv'))
-  for (const item of dwaActivities) {
-    addActivity(item, 'DWA', 3)
+  const dwaPath = path.join(STANDARDS_DIR, 'ONET.DetailedWorkActivities.tsv')
+  if (fs.existsSync(dwaPath)) {
+    const dwaActivities = parseTSV(dwaPath)
+    for (const item of dwaActivities) {
+      addActivity(item, 'DWA', 3)
+    }
   }
 
   console.log(`  📊 Generated ${activities.length} unified activities`)
@@ -603,17 +1109,19 @@ async function generateTasks(parser: GraphDLParser): Promise<AbstractTask[]> {
   ): void {
     if (!stmt.predicate || !stmt.object) return
 
-    // Generate GraphDL ID
-    const graphdlId = parser.toGraphDL(stmt)
-    if (!graphdlId || seen.has(graphdlId)) return
-    seen.add(graphdlId)
+    // Generate Task ID using GraphDL parser (camelCase verb, PascalCase objects)
+    const taskId = parser.toGraphDL(stmt)
+    if (!taskId || seen.has(taskId)) return
+    seen.add(taskId)
 
     const objectPascal = toPascalCase(stmt.object)
+    // Extract clean concept ID from complement (handles infinitives, prepositions, etc.)
+    const prepObjectConcept = stmt.complement ? extractConceptFromComplement(stmt.complement) : undefined
 
     tasks.push({
       ns: NAMESPACES.tasks,
       type: 'Task',
-      id: graphdlId,
+      id: taskId,
       name: `${stmt.predicate} ${stmt.object}`,
       description: sourceText,
       code,
@@ -621,7 +1129,7 @@ async function generateTasks(parser: GraphDLParser): Promise<AbstractTask[]> {
       verb: stmt.predicate.toLowerCase(),
       object: objectPascal,
       preposition: stmt.preposition,
-      prepObject: stmt.complement ? toPascalCase(stmt.complement) : undefined,
+      prepObject: prepObjectConcept,
       source: sourceText,
       sourceType,
     })
@@ -1163,6 +1671,7 @@ function generateTech(): AbstractTech[] {
 
   const tech: AbstractTech[] = []
   const seen = new Set<string>()
+  let acronymCount = 0
 
   // Load ONET Technologies
   const technologies = parseTSV(path.join(STANDARDS_DIR, 'ONET.Technologies.tsv'))
@@ -1170,24 +1679,54 @@ function generateTech(): AbstractTech[] {
     const name = item.name || item.id || ''
     if (!name) continue
 
-    const id = toPascalCase(name)
-    if (!id || seen.has(id)) continue
-    seen.add(id)
+    // Extract acronym from name
+    const { fullName, acronym } = extractAcronym(name)
 
-    tech.push({
+    // Create the primary entry with the full name (with acronym removed)
+    const primaryId = toPascalCase(fullName)
+    if (!primaryId || seen.has(primaryId)) continue
+    seen.add(primaryId)
+
+    const primaryEntry: AbstractTech = {
       ns: NAMESPACES.tech,
       type: 'Tech',
-      id,
-      name,
+      id: primaryId,
+      name: fullName,
       description: item.description || '',
       code: item.code,
-      shortName: toShortName(name),
+      shortName: toShortName(fullName),
       sourceType: 'ONET',
       unspscCode: item.code,
-    })
+      acronym: acronym || '', // Always include the field
+      sameAs: '', // Always include the field
+    }
+    tech.push(primaryEntry)
+
+    // If there's an acronym, create an alias entry
+    if (acronym) {
+      const acronymId = acronym // Keep acronym as-is for the ID
+      if (!seen.has(acronymId)) {
+        seen.add(acronymId)
+        acronymCount++
+
+        tech.push({
+          ns: NAMESPACES.tech,
+          type: 'Tech',
+          id: acronymId,
+          name: acronym,
+          description: `Alias for ${fullName}`,
+          code: item.code,
+          shortName: acronym.toLowerCase(),
+          sourceType: 'ONET',
+          unspscCode: item.code,
+          acronym: '', // Empty for alias entries
+          sameAs: primaryId, // Link back to the full name entry
+        })
+      }
+    }
   }
 
-  console.log(`  📊 Generated ${tech.length} unified tech`)
+  console.log(`  📊 Generated ${tech.length} unified tech (${acronymCount} acronym aliases)`)
   return tech
 }
 
@@ -1638,6 +2177,267 @@ function dedupeRelationships(rels: Relationship[]): Relationship[] {
 }
 
 // ============================================================================
+// Concepts Generator
+// ============================================================================
+
+/**
+ * Generate Concepts from Task objects
+ * Concepts are the noun phrases (Objects) that appear in Tasks
+ * Format: [Occupation].[verb].[Object].[prep].[Object]
+ */
+function generateConcepts(
+  tasks: AbstractTask[],
+  processes: AbstractProcess[]
+): {
+  concepts: AbstractConcept[]
+  conceptTaskRels: Relationship[]
+} {
+  console.log('\n💡 Generating Concepts from Tasks and Processes...')
+
+  const conceptMap = new Map<
+    string,
+    { name: string; sourceType: string; taskIds: string[]; processIds: string[] }
+  >()
+
+  // Helper to validate concept IDs
+  const isValidConcept = (conceptId: string): boolean => {
+    if (!conceptId || conceptId.length < 3 || conceptId.length > 60) return false
+    // Skip concepts starting with prepositions, conjunctions, or articles
+    if (/^(To|For|With|From|In|On|At|By|Of|And|Or|The|A|An|Both|Each|All|Any|Some|No|None|Within|Through|Into)[A-Z]/.test(conceptId)) return false
+    // Skip concepts that contain conjunctions in the middle (sign of failed expansion)
+    // e.g., ReviewOrApproveProjectDesignChanges, ManageAndCoordinate
+    if (/[a-z](And|Or)[A-Z]/.test(conceptId)) return false
+    // Skip concepts ending with And/Or (sign of truncated conjunction)
+    // e.g., StudentsIndividuallyAnd, ClientsIndividuallyOr
+    if (/(And|Or)$/.test(conceptId)) return false
+    // Skip concepts that are just And/Or
+    if (conceptId === 'And' || conceptId === 'Or') return false
+    // Skip concepts that are just verbs
+    if (/^(Is|Are|Was|Were|Be|Been|Being|Has|Have|Had|Do|Does|Did|Will|Would|Shall|Should|May|Might|Must|Can|Could)[A-Z]?$/.test(conceptId)) return false
+    // Skip numeric-only concepts
+    if (/^\d+$/.test(conceptId)) return false
+    // Skip concepts containing pronouns (often parsed incorrectly as IT)
+    // e.g., ITRemainsSafe, ITValid, TastingIT (these are "it remains safe", "tasting it" not Information Technology)
+    if (/^(IT|It)[A-Z]/.test(conceptId) || /[a-z](IT|It)([A-Z]|$)/.test(conceptId)) return false
+    // Skip truncated/malformed concepts (fragments from improper parsing)
+    if (/^(mation|mations?|ing|tion|tions?|ating|ness|ment|ance|ence)$/i.test(conceptId)) return false
+    // Also skip concepts that START with these truncated patterns
+    if (/^(mation|mations?)[A-Z]/.test(conceptId)) return false
+    // Skip concepts starting with common verbs (likely infinitive phrases)
+    const firstWordMatch = conceptId.match(/^([A-Z][a-z]+)/)
+    if (firstWordMatch && COMMON_VERBS.has(firstWordMatch[1].toLowerCase())) {
+      return false
+    }
+    return true
+  }
+
+  // Extract concepts from tasks
+  for (const task of tasks) {
+    // Extract the main object - clean it first to remove conjunctions/verbs
+    if (task.object) {
+      let conceptId = cleanConceptId(task.object)
+      if (!conceptId || !isValidConcept(conceptId)) {
+        // Try using the raw object if cleaning failed
+        conceptId = task.object
+      }
+      if (!isValidConcept(conceptId)) continue
+      conceptId = conceptId!
+      if (!conceptMap.has(conceptId)) {
+        conceptMap.set(conceptId, {
+          name: conceptId.replace(/([A-Z])/g, ' $1').trim(), // PascalCase to words
+          sourceType: 'Task',
+          taskIds: [],
+          processIds: [],
+        })
+      }
+      conceptMap.get(conceptId)!.taskIds.push(task.id)
+    }
+
+    // Extract the prepositional object (if exists) - clean it first
+    if (task.prepObject) {
+      let prepConceptId = cleanConceptId(task.prepObject)
+      if (!prepConceptId || !isValidConcept(prepConceptId)) {
+        prepConceptId = task.prepObject
+      }
+      if (isValidConcept(prepConceptId)) {
+        if (!conceptMap.has(prepConceptId)) {
+          conceptMap.set(prepConceptId, {
+            name: prepConceptId.replace(/([A-Z])/g, ' $1').trim(),
+            sourceType: 'Task',
+            taskIds: [],
+            processIds: [],
+          })
+        }
+        conceptMap.get(prepConceptId)!.taskIds.push(task.id)
+      }
+    }
+  }
+
+  // Extract concepts from processes
+  for (const proc of processes) {
+    // Process names are often noun phrases
+    const words = proc.name.split(/\s+/)
+    if (words.length >= 2) {
+      // Use PascalCase version of the full name
+      let conceptId = toPascalCase(proc.name)
+      // Clean the concept ID to remove conjunctions/verbs
+      const cleaned = cleanConceptId(conceptId)
+      if (cleaned && isValidConcept(cleaned)) {
+        conceptId = cleaned
+      }
+      if (!isValidConcept(conceptId)) continue
+      if (!conceptMap.has(conceptId)) {
+        conceptMap.set(conceptId, {
+          name: proc.name,
+          sourceType: 'Process',
+          taskIds: [],
+          processIds: [],
+        })
+      }
+      conceptMap.get(conceptId)!.processIds.push(proc.id)
+    }
+  }
+
+  // Build concepts array
+  const concepts: AbstractConcept[] = []
+  for (const [id, data] of conceptMap) {
+    concepts.push({
+      ns: NAMESPACES.concepts,
+      type: 'Concept',
+      id,
+      name: data.name,
+      description: `Concept extracted from ${data.sourceType}`,
+      sourceType: data.sourceType,
+      sourceTasks: data.taskIds.length > 0 ? data.taskIds.slice(0, 10) : undefined,
+      sourceProcesses: data.processIds.length > 0 ? data.processIds.slice(0, 10) : undefined,
+    })
+  }
+
+  // Build concept-task relationships (only for valid concepts)
+  const conceptTaskRels: Relationship[] = []
+  for (const task of tasks) {
+    if (task.object && isValidConcept(task.object) && conceptMap.has(task.object)) {
+      conceptTaskRels.push({
+        from: `${NAMESPACES.tasks}/${task.id}`,
+        to: `${NAMESPACES.concepts}/${task.object}`,
+        predicate: 'hasObject',
+        reverse: 'objectOf',
+      })
+    }
+    if (task.prepObject && isValidConcept(task.prepObject) && conceptMap.has(task.prepObject)) {
+      conceptTaskRels.push({
+        from: `${NAMESPACES.tasks}/${task.id}`,
+        to: `${NAMESPACES.concepts}/${task.prepObject}`,
+        predicate: 'hasPrepObject',
+        reverse: 'prepObjectOf',
+      })
+    }
+  }
+
+  console.log(`  📊 Generated ${concepts.length} concepts`)
+  return { concepts, conceptTaskRels }
+}
+
+// ============================================================================
+// Occupation-Task Relationships
+// ============================================================================
+
+/**
+ * Generate OccupationTasks relationship file
+ * Links Occupations to their Tasks with the format:
+ * [Occupation].[action].[Object].[preposition].[Object]
+ */
+function generateOccupationTasks(
+  tasks: AbstractTask[]
+): {
+  relationships: Relationship[]
+  occupationTasks: Array<{ occupationTaskId: string; occupationId: string; taskId: string; taskType: string; description: string }>
+} {
+  console.log('\n🔗 Generating Occupation-Task relationships...')
+
+  // Load the ONET Occupation.Task relationship
+  const onetOccTaskPath = path.join(
+    STANDARDS_DIR,
+    'relationships/ONET.Occupation.Task.tsv'
+  )
+  if (!fs.existsSync(onetOccTaskPath)) {
+    console.log('  ⚠️  ONET.Occupation.Task.tsv not found')
+    return { relationships: [], occupationTasks: [] }
+  }
+
+  const onetRels = parseTSV(onetOccTaskPath)
+
+  // Load occupations to get their IDs
+  const occupationsPath = path.join(STANDARDS_DIR, 'ONET.Occupations.tsv')
+  const occupations = parseTSV(occupationsPath)
+  const codeToOccId = new Map<string, string>()
+  for (const occ of occupations) {
+    const code = occ.code || ''
+    const id = occ.id || ''
+    if (code && id) {
+      codeToOccId.set(code, id.replace(/_/g, '')) // Remove underscores: Chief_Executives -> ChiefExecutives
+    }
+  }
+
+  // Build a map from ONET task code to our tasks
+  const codeToTasks = new Map<string, AbstractTask[]>()
+  for (const task of tasks) {
+    if (task.code) {
+      if (!codeToTasks.has(task.code)) {
+        codeToTasks.set(task.code, [])
+      }
+      codeToTasks.get(task.code)!.push(task)
+    }
+  }
+
+  // Build relationships and OccupationTasks records
+  const relationships: Relationship[] = []
+  const occupationTasks: Array<{ occupationTaskId: string; occupationId: string; taskId: string; taskType: string; description: string }> = []
+  const seenOccTasks = new Set<string>()
+
+  for (const rel of onetRels) {
+    const occCode = rel.fromCode || ''
+    const taskCode = rel.toCode || ''
+    const taskType = rel.taskType || ''
+
+    const occId = codeToOccId.get(occCode) || ''
+    const tasksForCode = codeToTasks.get(taskCode) || []
+
+    for (const task of tasksForCode) {
+      // Create standard relationship
+      relationships.push({
+        from: `${NAMESPACES.onet}/${occCode}`,
+        to: `${NAMESPACES.tasks}/${task.id}`,
+        predicate: 'performsTask',
+        reverse: 'performedBy',
+        taskType,
+      })
+
+      // Create OccupationTask record with format: Occupation.taskId
+      // This gives us: ChiefExecutives.direct.OrganizationsFinancialActivities.to.fund.Operations
+      if (occId && task.id) {
+        const occupationTaskId = `${occId}.${task.id}`
+
+        if (!seenOccTasks.has(occupationTaskId)) {
+          seenOccTasks.add(occupationTaskId)
+          occupationTasks.push({
+            occupationTaskId,
+            occupationId: occId,
+            taskId: task.id,
+            taskType,
+            description: task.source || task.name || '', // Include original task text
+          })
+        }
+      }
+    }
+  }
+
+  console.log(`  📊 Generated ${relationships.length} occupation-task relationships`)
+  console.log(`  📊 Generated ${occupationTasks.length} unique occupation-tasks`)
+  return { relationships, occupationTasks }
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -1673,7 +2473,7 @@ async function main(): Promise<void> {
   const roles = await generateRoles(parser)
   const jobs = generateJobs()
   const competencies = generateCompetencies()
-  const activities = generateActivities()
+  const activities = await generateActivities(parser)
   const contexts = generateContexts()
   const tasks = await generateTasks(parser)
   const { actions, events, taskActionRels, actionEventRels } =
@@ -1758,6 +2558,27 @@ async function main(): Promise<void> {
   const locations = generateLocations()
   writeTSV(path.join(OUTPUT_DIR, 'Locations.tsv'), locations.map(entityToRecord))
 
+  // ========== Semantic Domain ==========
+  console.log('\n📊 Semantic Domain')
+  console.log('─'.repeat(50))
+
+  const { concepts, conceptTaskRels } = generateConcepts(tasks, processes)
+  const { relationships: occTaskRels, occupationTasks } = generateOccupationTasks(tasks)
+
+  writeTSV(path.join(OUTPUT_DIR, 'Concepts.tsv'), concepts.map(entityToRecord))
+  writeTSV(
+    path.join(OUTPUT_DIR, 'OccupationTasks.tsv'),
+    occupationTasks.map((ot) => ({
+      id: ot.occupationTaskId,
+      occupationId: ot.occupationId,
+      taskId: ot.taskId,
+      taskType: ot.taskType,
+      description: ot.description, // Source task text
+    }))
+  )
+  writeTSV(path.join(OUTPUT_REL_DIR, 'Tasks.Concepts.tsv'), dedupeRelationships(conceptTaskRels))
+  writeTSV(path.join(OUTPUT_REL_DIR, 'Occupations.Tasks.tsv'), dedupeRelationships(occTaskRels))
+
   // ========== Summary ==========
   console.log('\n📈 Summary')
   console.log('─'.repeat(50))
@@ -1785,6 +2606,8 @@ async function main(): Promise<void> {
   console.log(`  LocationTypes:      ${locationTypes.length}`)
   console.log(`  MerchantCategories: ${merchantCategories.length}`)
   console.log(`  Locations:          ${locations.length}`)
+  console.log(`  Concepts:           ${concepts.length}`)
+  console.log(`  OccupationTasks:    ${occupationTasks.length}`)
 
   console.log('\n✨ Interface generation complete!')
 }
