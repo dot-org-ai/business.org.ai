@@ -1361,6 +1361,16 @@ function generateLocationTypes(): AbstractLocationType[] {
   return locationTypes
 }
 
+/**
+ * Convert text to camelCase ID (for attributes/properties)
+ */
+function toCamelCase(text: string): string {
+  if (!text) return ''
+  const pascal = toPascalCase(text)
+  if (!pascal) return ''
+  return pascal.charAt(0).toLowerCase() + pascal.slice(1)
+}
+
 function generateProductAttributes(): AbstractProductAttribute[] {
   console.log('\n🏷️ Generating Product Attributes (GS1)...')
 
@@ -1372,7 +1382,8 @@ function generateProductAttributes(): AbstractProductAttribute[] {
     const name = item.name || item.id || ''
     if (!name) continue
 
-    const id = toPascalCase(name)
+    // Use camelCase for attribute IDs
+    const id = toCamelCase(name)
     if (!id || seen.has(id)) continue
     seen.add(id)
 
