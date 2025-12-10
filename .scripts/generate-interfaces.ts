@@ -20,18 +20,32 @@ import {
   Entity,
   Relationship,
   AbstractRole,
+  AbstractJob,
   AbstractCompetency,
   AbstractTask,
   AbstractAction,
   AbstractEvent,
+  AbstractActivity,
+  AbstractContext,
   AbstractIndustry,
   AbstractProcess,
   AbstractProduct,
   AbstractService,
   AbstractLocation,
+  AbstractTech,
+  AbstractTool,
+  AbstractBusinessStep,
+  AbstractDisposition,
+  AbstractIdentifierType,
+  AbstractLocationType,
+  AbstractProductAttribute,
+  AbstractWorkStyle,
+  AbstractWorkValue,
+  AbstractInterest,
+  AbstractMerchantCategory,
   NAMESPACES,
 } from './types.js'
-import { GraphDLParser, ParsedStatement } from '../graphdl/dist/index.js'
+import { GraphDLParser, ParsedStatement, NounPhraseExpander } from '../graphdl/dist/index.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -132,7 +146,6 @@ function normalizeName(name: string): string {
     /^miscellaneous\s+/i,
     /^various\s+/i,
     /^unclassified\s+/i,
-    /^general\s+/i,
   ]
 
   // Patterns to strip from the end
@@ -254,78 +267,20 @@ async function generateRoles(parser: GraphDLParser): Promise<AbstractRole[]> {
   const roles: AbstractRole[] = []
   const seen = new Set<string>()
 
-  // Helper to expand AND/OR in occupation names
+  // Use GraphDL NounPhraseExpander for intelligent compound name expansion
+  const nounPhraseExpander = new NounPhraseExpander()
+
+  // Helper to expand AND/OR in occupation names using GraphDL
   function expandName(name: string): string[] {
-    const commonSuffixes = ['Supervisors', 'Specialists', 'Technicians', 'Workers', 'Operators', 'Managers', 'Assistants', 'Clerks', 'Instructors', 'Representatives', 'Attendants', 'Aides', 'Therapists']
+    const result = nounPhraseExpander.expand(name)
+    return result.expansions
+  }
 
-    // Find the common suffix
-    const words = name.split(/\s+/)
-    const lastWord = words[words.length - 1]
-    let suffix = ''
-    if (commonSuffixes.some(s => s.toLowerCase() === lastWord.toLowerCase())) {
-      suffix = lastWord
-    }
-
-    // First try comma-separated (with optional "and" before last item)
-    if (name.includes(',')) {
-      let parts = name.split(/\s*,\s*(?:and\s+)?/i)
-        .map(p => p.trim())
-        .filter(p => p.length > 0)
-
-      // Distribute suffix if we have one
-      if (suffix && parts.length > 1) {
-        const lastPart = parts[parts.length - 1]
-        if (lastPart.toLowerCase().endsWith(suffix.toLowerCase())) {
-          parts[parts.length - 1] = lastPart.slice(0, -suffix.length).trim()
-        }
-
-        parts = parts.map(p => {
-          if (p.toLowerCase().endsWith(suffix.toLowerCase())) return p
-          return `${p} ${suffix}`
-        }).filter(p => p.length > suffix.length + 1)
-
-        return parts
-      }
-
-      const allShort = parts.every(p => p.split(/\s+/).length <= 4)
-      if (allShort && parts.length > 1) return parts
-    }
-
-    // Try slash-separated
-    if (name.includes('/')) {
-      const parts = name.split(/\s*\/\s*/)
-        .map(p => p.trim())
-        .filter(p => p.length > 0)
-
-      const allShort = parts.every(p => p.split(/\s+/).length <= 3)
-      if (allShort && parts.length > 1) return parts
-    }
-
-    // Try "A and B" pattern with common suffix
-    if (name.includes(' and ') && suffix) {
-      const parts = name.split(/\s+and\s+/i)
-        .map(p => p.trim())
-        .filter(p => p.length > 0)
-
-      if (parts.length >= 2) {
-        let lastPart = parts[parts.length - 1]
-        if (lastPart.toLowerCase().endsWith(suffix.toLowerCase())) {
-          lastPart = lastPart.slice(0, -suffix.length).trim()
-          parts[parts.length - 1] = lastPart
-        }
-
-        const expanded = parts.map(p => {
-          if (p.toLowerCase().endsWith(suffix.toLowerCase())) return p
-          return `${p} ${suffix}`
-        }).filter(p => p.length > suffix.length + 1)
-
-        if (expanded.every(p => p.split(/\s+/).length <= 5)) {
-          return expanded
-        }
-      }
-    }
-
-    return [name]
+  // Load JobZone relationships to enrich occupations
+  const jobZoneRels = parseTSV(path.join(STANDARDS_DIR, 'relationships/ONET.Occupation.JobZone.tsv'))
+  const jobZoneByCode = new Map<string, string>()
+  for (const rel of jobZoneRels) {
+    jobZoneByCode.set(rel.fromCode, rel.toCode)
   }
 
   // Helper to add role
@@ -339,6 +294,9 @@ async function generateRoles(parser: GraphDLParser): Promise<AbstractRole[]> {
     // First normalize, then expand
     const normalizedName = normalizeName(rawName)
     const expandedNames = expandName(normalizedName)
+
+    // Get jobZone for this occupation
+    const jobZone = jobZoneByCode.get(occ.code)
 
     for (const expandedName of expandedNames) {
       // Apply normalization again
@@ -358,6 +316,7 @@ async function generateRoles(parser: GraphDLParser): Promise<AbstractRole[]> {
         category: 'Occupation',
         sourceType,
         sourceCode: occ.code,
+        jobZone,
       })
     }
   }
@@ -376,6 +335,50 @@ async function generateRoles(parser: GraphDLParser): Promise<AbstractRole[]> {
 
   console.log(`  📊 Generated ${roles.length} unified roles`)
   return roles
+}
+
+function generateJobs(): AbstractJob[] {
+  console.log('\n💼 Generating Unified Jobs...')
+
+  const jobs: AbstractJob[] = []
+  const seen = new Set<string>()
+
+  // Helper to add job
+  function addJob(item: Record<string, string>, sourceType: string): void {
+    const name = item.name || item.id || ''
+    if (!name) return
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) return
+    seen.add(id)
+
+    jobs.push({
+      ns: NAMESPACES.jobs,
+      type: 'Job',
+      id,
+      name,
+      description: item.description || '',
+      code: item.code,
+      shortName: toShortName(name),
+      sourceType,
+      occupationCode: item.code, // Link to parent occupation
+    })
+  }
+
+  // Load ONET Alternate Titles
+  const alternateTitles = parseTSV(path.join(STANDARDS_DIR, 'ONET.AlternateTitles.tsv'))
+  for (const title of alternateTitles) {
+    addJob(title, 'ONETAlternateTitle')
+  }
+
+  // Load ONET Reported Titles
+  const reportedTitles = parseTSV(path.join(STANDARDS_DIR, 'ONET.ReportedTitles.tsv'))
+  for (const title of reportedTitles) {
+    addJob(title, 'ONETReportedTitle')
+  }
+
+  console.log(`  📊 Generated ${jobs.length} unified jobs`)
+  return jobs
 }
 
 function generateCompetencies(): AbstractCompetency[] {
@@ -418,6 +421,167 @@ function generateCompetencies(): AbstractCompetency[] {
 
   console.log(`  📊 Generated ${competencies.length} unified competencies`)
   return competencies
+}
+
+function generateActivities(): AbstractActivity[] {
+  console.log('\n🎯 Generating Unified Activities...')
+
+  const activities: AbstractActivity[] = []
+  const seen = new Set<string>()
+
+  // Helper to add activity
+  function addActivity(
+    item: Record<string, string>,
+    category: 'WorkActivity' | 'IWA' | 'DWA',
+    level: number
+  ): void {
+    const name = item.name || item.id || ''
+    if (!name) return
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) return
+    seen.add(id)
+
+    // Extract parent ID from code hierarchy
+    // WorkActivity: 4.A.1.a.1
+    // IWA: 4.A.1.a.1.I01 -> parent is 4.A.1.a.1
+    // DWA: 4.A.1.a.1.I01.D01 -> parent is 4.A.1.a.1.I01
+    let parentId: string | undefined
+    const code = item.code || ''
+    if (category === 'IWA' && code.includes('.I')) {
+      const parentCode = code.split('.I')[0]
+      // We'd need to look up the parent by code, but for now leave undefined
+    } else if (category === 'DWA' && code.includes('.D')) {
+      const parentCode = code.split('.D')[0]
+    }
+
+    activities.push({
+      ns: NAMESPACES.activities,
+      type: 'Activity',
+      id,
+      name,
+      description: item.description || '',
+      code,
+      shortName: toShortName(name),
+      category,
+      sourceType: 'ONET',
+      level,
+    })
+  }
+
+  // Load WorkActivities (level 1 - top level)
+  const workActivities = parseTSV(path.join(STANDARDS_DIR, 'ONET.WorkActivities.tsv'))
+  for (const item of workActivities) {
+    addActivity(item, 'WorkActivity', 1)
+  }
+
+  // Load IWA - Intermediate Work Activities (level 2)
+  const iwaActivities = parseTSV(path.join(STANDARDS_DIR, 'ONET.IWA.tsv'))
+  for (const item of iwaActivities) {
+    addActivity(item, 'IWA', 2)
+  }
+
+  // Load DWA - Detailed Work Activities (level 3)
+  const dwaActivities = parseTSV(path.join(STANDARDS_DIR, 'ONET.DWA.tsv'))
+  for (const item of dwaActivities) {
+    addActivity(item, 'DWA', 3)
+  }
+
+  console.log(`  📊 Generated ${activities.length} unified activities`)
+  return activities
+}
+
+function generateContexts(): AbstractContext[] {
+  console.log('\n🌐 Generating Unified Contexts...')
+
+  const contexts: AbstractContext[] = []
+  const seen = new Set<string>()
+
+  // Helper to expand comma/or separated names
+  // "Dealing With Unpleasant, Angry, or Discourteous People" ->
+  // ["Dealing With Unpleasant People", "Dealing With Angry People", "Dealing With Discourteous People"]
+  function expandContextName(name: string): string[] {
+    // Pattern: "Verb X, Y, or Z Suffix" - need to distribute the suffix
+    // Look for patterns like "Dealing With X, Y, or Z People"
+    const withPattern = /^(.+?)\s+(with|to)\s+(.+?),\s+(.+?),?\s+or\s+(.+?)\s+(\w+)$/i
+    const match = name.match(withPattern)
+    if (match) {
+      const [, prefix, prep, first, second, third, suffix] = match
+      return [
+        `${prefix} ${prep} ${first} ${suffix}`,
+        `${prefix} ${prep} ${second} ${suffix}`,
+        `${prefix} ${prep} ${third} ${suffix}`,
+      ]
+    }
+
+    // Simpler pattern: "X, Y, or Z Suffix" without prefix
+    const simplePattern = /^(.+?),\s+(.+?),?\s+or\s+(.+?)\s+(\w+)$/i
+    const simpleMatch = name.match(simplePattern)
+    if (simpleMatch) {
+      const [, first, second, third, suffix] = simpleMatch
+      return [
+        `${first} ${suffix}`,
+        `${second} ${suffix}`,
+        `${third} ${suffix}`,
+      ]
+    }
+
+    // Two-item pattern: "X or Y Suffix"
+    const twoPattern = /^(.+?)\s+(with|to)\s+(.+?)\s+or\s+(.+?)\s+(\w+)$/i
+    const twoMatch = name.match(twoPattern)
+    if (twoMatch) {
+      const [, prefix, prep, first, second, suffix] = twoMatch
+      return [
+        `${prefix} ${prep} ${first} ${suffix}`,
+        `${prefix} ${prep} ${second} ${suffix}`,
+      ]
+    }
+
+    return [name]
+  }
+
+  // Helper to add context
+  function addContext(item: Record<string, string>): void {
+    const rawName = item.name || item.id || ''
+    if (!rawName) return
+
+    // Extract category from description if available
+    let category: string | undefined
+    const desc = item.description || ''
+    const categoryMatch = desc.match(/Category:\s*([^|,]+)/i)
+    if (categoryMatch) {
+      category = categoryMatch[1].trim()
+      if (category === 'n/a') category = undefined
+    }
+
+    const expandedNames = expandContextName(rawName)
+    for (const name of expandedNames) {
+      const id = toPascalCase(name)
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+
+      contexts.push({
+        ns: NAMESPACES.contexts,
+        type: 'Context',
+        id,
+        name,
+        description: desc.replace(/Category:\s*[^|,]+/i, '').trim(),
+        code: item.code,
+        shortName: toShortName(name),
+        category,
+        sourceType: 'ONET',
+      })
+    }
+  }
+
+  // Load Work Contexts
+  const workContexts = parseTSV(path.join(STANDARDS_DIR, 'ONET.WorkContext.tsv'))
+  for (const item of workContexts) {
+    addContext(item)
+  }
+
+  console.log(`  📊 Generated ${contexts.length} unified contexts`)
+  return contexts
 }
 
 /**
@@ -634,123 +798,17 @@ async function generateIndustries(parser: GraphDLParser): Promise<AbstractIndust
   const industries: AbstractIndustry[] = []
   const seen = new Set<string>()
 
-  // Helper to expand AND/OR in industry names
+  // Use GraphDL NounPhraseExpander for intelligent compound name expansion
+  const nounPhraseExpander = new NounPhraseExpander()
+
+  // Helper to expand AND/OR in industry names using GraphDL
   function expandName(name: string): string[] {
-    const commonSuffixes = ['Manufacturing', 'Services', 'Products', 'Trade', 'Wholesalers', 'Retailers', 'Production', 'Construction', 'Repair', 'Equipment', 'Supplies', 'Facilities']
-
-    // Find the common suffix (usually "Manufacturing", "Services", etc.)
-    const words = name.split(/\s+/)
-    const lastWord = words[words.length - 1]
-    let suffix = ''
-    if (commonSuffixes.some(s => s.toLowerCase() === lastWord.toLowerCase())) {
-      suffix = lastWord
-    }
-
-    // First try comma-separated (with optional "and" before last item)
-    if (name.includes(',')) {
-      // Split by comma and optional "and"
-      let parts = name.split(/\s*,\s*(?:and\s+)?/i)
-        .map(p => p.trim())
-        .filter(p => p.length > 0)
-
-      // If we have a suffix and multiple parts, distribute the suffix
-      if (suffix && parts.length > 1) {
-        // Remove the suffix from the last part if it has it
-        const lastPart = parts[parts.length - 1]
-        if (lastPart.toLowerCase().endsWith(suffix.toLowerCase())) {
-          parts[parts.length - 1] = lastPart.slice(0, -suffix.length).trim()
-        }
-
-        // Add suffix to parts that don't have it
-        parts = parts.map(p => {
-          if (p.toLowerCase().endsWith(suffix.toLowerCase())) {
-            return p
-          }
-          return `${p} ${suffix}`
-        }).filter(p => p.length > suffix.length + 1)
-
-        return parts
-      }
-
-      // Only expand if parts are reasonably short (3 words max per part)
-      const allShort = parts.every(p => p.split(/\s+/).length <= 3)
-      if (allShort && parts.length > 1) return parts
-    }
-
-    // Try slash-separated (e.g., "Audio/Visual" -> ["Audio", "Visual"])
-    if (name.includes('/')) {
-      const parts = name.split(/\s*\/\s*/)
-        .map(p => p.trim())
-        .filter(p => p.length > 0)
-
-      const allShort = parts.every(p => p.split(/\s+/).length <= 3)
-      if (allShort && parts.length > 1) return parts
-    }
-
-    // Try splitting on multiple "and"s with common suffix
-    // E.g., "Air Conditioning and Warm Air Heating Equipment and Commercial Refrigeration Equipment Manufacturing"
-    if (name.includes(' and ') && suffix) {
-      // Split on " and " boundaries
-      const parts = name.split(/\s+and\s+/i)
-        .map(p => p.trim())
-        .filter(p => p.length > 0)
-
-      if (parts.length >= 2) {
-        // Remove suffix from last part
-        let lastPart = parts[parts.length - 1]
-        if (lastPart.toLowerCase().endsWith(suffix.toLowerCase())) {
-          lastPart = lastPart.slice(0, -suffix.length).trim()
-          parts[parts.length - 1] = lastPart
-        }
-
-        // Distribute suffix to all parts
-        const expanded = parts.map(p => {
-          if (p.toLowerCase().endsWith(suffix.toLowerCase())) {
-            return p
-          }
-          return `${p} ${suffix}`
-        }).filter(p => p.length > suffix.length + 1)
-
-        // Only use if each part is reasonable length
-        if (expanded.every(p => p.split(/\s+/).length <= 5)) {
-          return expanded
-        }
-      }
-    }
-
-    // Try "A and B" pattern without commas (for shorter cases)
-    const andMatch = name.match(/^(.+?)\s+and\s+(.+)$/i)
-    if (andMatch) {
-      const [, before, after] = andMatch
-
-      // Check if there's a common suffix (last word of 'after')
-      const afterWords = after.trim().split(/\s+/)
-      if (afterWords.length >= 2 && suffix) {
-        // If "before" doesn't already end with the suffix, create expanded versions
-        if (!before.toLowerCase().endsWith(suffix.toLowerCase())) {
-          const part1 = `${before} ${suffix}`
-          const part2 = after
-
-          // Only expand if both parts are reasonably short
-          if (part1.split(/\s+/).length <= 5 && part2.split(/\s+/).length <= 5) {
-            return [part1, part2]
-          }
-        }
-      }
-
-      // Simple "A and B" split if both parts are short
-      const beforeShort = before.split(/\s+/).length <= 3
-      const afterShort = after.split(/\s+/).length <= 3
-      if (beforeShort && afterShort) {
-        return [before, after]
-      }
-    }
-
-    return [name]
+    const result = nounPhraseExpander.expand(name)
+    return result.expansions
   }
 
-  // Helper to add industry from any NAICS level
-  function addIndustry(item: Record<string, string>, level: number): void {
+  // Helper to add industry from any source
+  function addIndustry(item: Record<string, string>, level: number, sourceType: string): void {
     const name = item.name || item.id || ''
     if (!name) return
 
@@ -773,27 +831,42 @@ async function generateIndustries(parser: GraphDLParser): Promise<AbstractIndust
         description: item.description || '',
         code: item.code,
         shortName: toShortName(finalName),
-        sourceType: 'NAICS',
+        sourceType,
         level,
       })
     }
   }
 
-  // Load all NAICS levels - each is still just an "Industry"
-  const sectors = parseTSV(path.join(STANDARDS_DIR, 'NAICS.Sectors.tsv'))
-  sectors.forEach(item => addIndustry(item, 1))
+  // Load all NAICS levels from unified Industries file
+  // The type column indicates level: Sector, Subsector, IndustryGroup, NAICSIndustry, NationalIndustry
+  const naicsData = parseTSV(path.join(STANDARDS_DIR, 'NAICS.Industries.tsv'))
 
-  const subsectors = parseTSV(path.join(STANDARDS_DIR, 'NAICS.Subsectors.tsv'))
-  subsectors.forEach(item => addIndustry(item, 2))
+  // Map type to level
+  const typeToLevel: Record<string, number> = {
+    'Sector': 1,
+    'Subsector': 2,
+    'IndustryGroup': 3,
+    'NAICSIndustry': 4,
+    'NationalIndustry': 5,
+  }
 
-  const groups = parseTSV(path.join(STANDARDS_DIR, 'NAICS.IndustryGroups.tsv'))
-  groups.forEach(item => addIndustry(item, 3))
+  for (const item of naicsData) {
+    const level = typeToLevel[item.type] || 4
+    addIndustry(item, level, 'NAICS')
+  }
 
-  const naicsIndustries = parseTSV(path.join(STANDARDS_DIR, 'NAICS.Industries.tsv'))
-  naicsIndustries.forEach(item => addIndustry(item, 4))
+  // Load SIC codes (SEC Standard Industrial Classification)
+  const sicData = parseTSV(path.join(STANDARDS_DIR, 'SEC.SICCodes.tsv'))
+  for (const item of sicData) {
+    // SIC codes are 4-digit, determine level from code length
+    const code = item.code || ''
+    let level = 4
+    if (code.length === 2) level = 1 // Division
+    else if (code.length === 3) level = 2 // Major Group
+    else level = 4 // Industry
 
-  const national = parseTSV(path.join(STANDARDS_DIR, 'NAICS.NationalIndustries.tsv'))
-  national.forEach(item => addIndustry(item, 5))
+    addIndustry(item, level, 'SIC')
+  }
 
   console.log(`  📊 Generated ${industries.length} unified industries`)
   return industries
@@ -893,14 +966,40 @@ async function generateProducts(parser: GraphDLParser): Promise<AbstractProduct[
       if (allShort && parts.length > 1) return parts
     }
 
-    // Try slash-separated (for simple cases without hyphen)
+    // Try slash-separated with shared suffix: "X/Y/Z Suffix" → ["X Suffix", "Y Suffix", "Z Suffix"]
+    // Example: "Meat/Poultry/Other Animals Unprocessed" → ["Meat Unprocessed", "Poultry Unprocessed", "Other Animals Unprocessed"]
     if (cleanName.includes('/')) {
+      // Check for pattern: "A/B/C Suffix" where Suffix is the last word(s)
+      const slashMatch = cleanName.match(/^(.+?\/[^\/]+)\s+(\w+(?:\s+\w+)?)$/)
+      if (slashMatch) {
+        const [, slashPart, suffix] = slashMatch
+        const parts = slashPart.split(/\s*\/\s*/)
+          .map(p => p.trim())
+          .filter(p => p.length > 0)
+
+        if (parts.length > 1) {
+          return parts.map(p => `${p} ${suffix}`)
+        }
+      }
+
+      // Simple slash-separated (no shared suffix)
       const parts = cleanName.split(/\s*\/\s*/)
         .map(p => p.trim())
         .filter(p => p.length > 0)
 
       const allShort = parts.every(p => p.split(/\s+/).length <= 4)
       if (allShort && parts.length > 1) return parts
+    }
+
+    // Try "X and Y Suffix" pattern: "Drink and Accommodation Services" → ["Drink Services", "Accommodation Services"]
+    const andMatch = cleanName.match(/^(.+?)\s+and\s+(.+?)\s+(\w+)$/i)
+    if (andMatch) {
+      const [, first, second, suffix] = andMatch
+      // Only expand if the suffix is a common word like "Services", "Products", "Equipment", etc.
+      const commonSuffixes = ['services', 'products', 'equipment', 'supplies', 'materials', 'systems', 'devices', 'tools']
+      if (commonSuffixes.includes(suffix.toLowerCase())) {
+        return [`${first} ${suffix}`, `${second} ${suffix}`]
+      }
     }
 
     return [cleanName]
@@ -1056,6 +1155,383 @@ async function generateServices(parser: GraphDLParser): Promise<AbstractService[
 }
 
 // ============================================================================
+// Technology Domain Generation
+// ============================================================================
+
+function generateTech(): AbstractTech[] {
+  console.log('\n💻 Generating Unified Tech...')
+
+  const tech: AbstractTech[] = []
+  const seen = new Set<string>()
+
+  // Load ONET Technologies
+  const technologies = parseTSV(path.join(STANDARDS_DIR, 'ONET.Technologies.tsv'))
+  for (const item of technologies) {
+    const name = item.name || item.id || ''
+    if (!name) continue
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    tech.push({
+      ns: NAMESPACES.tech,
+      type: 'Tech',
+      id,
+      name,
+      description: item.description || '',
+      code: item.code,
+      shortName: toShortName(name),
+      sourceType: 'ONET',
+      unspscCode: item.code,
+    })
+  }
+
+  console.log(`  📊 Generated ${tech.length} unified tech`)
+  return tech
+}
+
+function generateTools(): AbstractTool[] {
+  console.log('\n🔧 Generating Unified Tools...')
+
+  const tools: AbstractTool[] = []
+  const seen = new Set<string>()
+
+  // Load ONET Tools
+  const onetTools = parseTSV(path.join(STANDARDS_DIR, 'ONET.Tools.tsv'))
+  for (const item of onetTools) {
+    const name = item.name || item.id || ''
+    if (!name) continue
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    tools.push({
+      ns: NAMESPACES.tools,
+      type: 'Tool',
+      id,
+      name,
+      description: item.description || '',
+      code: item.code,
+      shortName: toShortName(name),
+      sourceType: 'ONET',
+      unspscCode: item.code,
+    })
+  }
+
+  console.log(`  📊 Generated ${tools.length} unified tools`)
+  return tools
+}
+
+// ============================================================================
+// Supply Chain Domain Generation (GS1)
+// ============================================================================
+
+function generateBusinessSteps(): AbstractBusinessStep[] {
+  console.log('\n📦 Generating Business Steps (GS1)...')
+
+  const steps: AbstractBusinessStep[] = []
+  const seen = new Set<string>()
+
+  const data = parseTSV(path.join(STANDARDS_DIR, 'GS1.BusinessSteps.tsv'))
+  for (const item of data) {
+    const name = item.name || item.id || ''
+    if (!name) continue
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    // Extract verb from description if available (e.g., "accept Goods. Accepting")
+    let verb: string | undefined
+    const desc = item.description || ''
+    const verbMatch = desc.match(/^(\w+)\s/)
+    if (verbMatch) {
+      verb = verbMatch[1].toLowerCase()
+    }
+
+    steps.push({
+      ns: NAMESPACES.businessSteps,
+      type: 'BusinessStep',
+      id,
+      name,
+      description: desc,
+      code: item.code,
+      shortName: toShortName(name),
+      sourceType: 'GS1',
+      verb,
+    })
+  }
+
+  console.log(`  📊 Generated ${steps.length} business steps`)
+  return steps
+}
+
+function generateDispositions(): AbstractDisposition[] {
+  console.log('\n📋 Generating Dispositions (GS1)...')
+
+  const dispositions: AbstractDisposition[] = []
+  const seen = new Set<string>()
+
+  const data = parseTSV(path.join(STANDARDS_DIR, 'GS1.Dispositions.tsv'))
+  for (const item of data) {
+    const name = item.name || item.id || ''
+    if (!name) continue
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    dispositions.push({
+      ns: NAMESPACES.dispositions,
+      type: 'Disposition',
+      id,
+      name,
+      description: item.description || name,
+      code: item.code,
+      shortName: toShortName(name),
+      sourceType: 'GS1',
+    })
+  }
+
+  console.log(`  📊 Generated ${dispositions.length} dispositions`)
+  return dispositions
+}
+
+function generateIdentifierTypes(): AbstractIdentifierType[] {
+  console.log('\n🔖 Generating Identifier Types (GS1)...')
+
+  const identifiers: AbstractIdentifierType[] = []
+  const seen = new Set<string>()
+
+  const data = parseTSV(path.join(STANDARDS_DIR, 'GS1.IdentifierTypes.tsv'))
+  for (const item of data) {
+    const name = item.name || item.id || ''
+    if (!name) continue
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    identifiers.push({
+      ns: NAMESPACES.identifierTypes,
+      type: 'IdentifierType',
+      id,
+      name,
+      description: item.description || name,
+      code: item.code,
+      shortName: item.code || toShortName(name),
+      sourceType: 'GS1',
+    })
+  }
+
+  console.log(`  📊 Generated ${identifiers.length} identifier types`)
+  return identifiers
+}
+
+function generateLocationTypes(): AbstractLocationType[] {
+  console.log('\n🏢 Generating Location Types (GS1)...')
+
+  const locationTypes: AbstractLocationType[] = []
+  const seen = new Set<string>()
+
+  const data = parseTSV(path.join(STANDARDS_DIR, 'GS1.LocationTypes.tsv'))
+  for (const item of data) {
+    const name = item.name || item.id || ''
+    if (!name) continue
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    locationTypes.push({
+      ns: NAMESPACES.locationTypes,
+      type: 'LocationType',
+      id,
+      name,
+      description: item.description || name,
+      code: item.code,
+      shortName: toShortName(name),
+      sourceType: 'GS1',
+    })
+  }
+
+  console.log(`  📊 Generated ${locationTypes.length} location types`)
+  return locationTypes
+}
+
+function generateProductAttributes(): AbstractProductAttribute[] {
+  console.log('\n🏷️ Generating Product Attributes (GS1)...')
+
+  const attributes: AbstractProductAttribute[] = []
+  const seen = new Set<string>()
+
+  const data = parseTSV(path.join(STANDARDS_DIR, 'GS1.Attributes.tsv'))
+  for (const item of data) {
+    const name = item.name || item.id || ''
+    if (!name) continue
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    attributes.push({
+      ns: NAMESPACES.productAttributes,
+      type: 'ProductAttribute',
+      id,
+      name,
+      description: item.description || name,
+      code: item.code,
+      shortName: toShortName(name),
+      sourceType: 'GS1',
+    })
+  }
+
+  console.log(`  📊 Generated ${attributes.length} product attributes`)
+  return attributes
+}
+
+// ============================================================================
+// Work Preferences Domain Generation (ONET)
+// ============================================================================
+
+function generateWorkStyles(): AbstractWorkStyle[] {
+  console.log('\n🎨 Generating Work Styles (ONET)...')
+
+  const styles: AbstractWorkStyle[] = []
+  const seen = new Set<string>()
+
+  const data = parseTSV(path.join(STANDARDS_DIR, 'ONET.WorkStyles.tsv'))
+  for (const item of data) {
+    const name = item.name || item.id || ''
+    if (!name) continue
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    styles.push({
+      ns: NAMESPACES.workStyles,
+      type: 'WorkStyle',
+      id,
+      name,
+      description: item.description || name,
+      code: item.code,
+      shortName: toShortName(name),
+      sourceType: 'ONET',
+    })
+  }
+
+  console.log(`  📊 Generated ${styles.length} work styles`)
+  return styles
+}
+
+function generateWorkValues(): AbstractWorkValue[] {
+  console.log('\n💎 Generating Work Values (ONET)...')
+
+  const values: AbstractWorkValue[] = []
+  const seen = new Set<string>()
+
+  const data = parseTSV(path.join(STANDARDS_DIR, 'ONET.WorkValues.tsv'))
+  for (const item of data) {
+    const name = item.name || item.id || ''
+    if (!name) continue
+
+    // Skip "High-Point" entries which are just placeholders
+    if (name.includes('High-Point')) continue
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    values.push({
+      ns: NAMESPACES.workValues,
+      type: 'WorkValue',
+      id,
+      name,
+      description: item.description || name,
+      code: item.code,
+      shortName: toShortName(name),
+      sourceType: 'ONET',
+    })
+  }
+
+  console.log(`  📊 Generated ${values.length} work values`)
+  return values
+}
+
+function generateInterests(): AbstractInterest[] {
+  console.log('\n🎯 Generating Interests/RIASEC (ONET)...')
+
+  const interests: AbstractInterest[] = []
+  const seen = new Set<string>()
+
+  // Use RIASEC file which has better descriptions
+  const data = parseTSV(path.join(STANDARDS_DIR, 'ONET.RIASEC.tsv'))
+  for (const item of data) {
+    const name = item.name || item.id || ''
+    if (!name) continue
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    interests.push({
+      ns: NAMESPACES.interests,
+      type: 'Interest',
+      id,
+      name,
+      description: item.description || name,
+      code: item.code,
+      shortName: item.code || toShortName(name),
+      sourceType: 'ONET',
+      riasecCode: item.code,
+    })
+  }
+
+  console.log(`  📊 Generated ${interests.length} interests`)
+  return interests
+}
+
+// ============================================================================
+// Financial Classifications Domain Generation
+// ============================================================================
+
+function generateMerchantCategories(): AbstractMerchantCategory[] {
+  console.log('\n💳 Generating Merchant Categories (MCC)...')
+
+  const categories: AbstractMerchantCategory[] = []
+  const seen = new Set<string>()
+
+  const data = parseTSV(path.join(STANDARDS_DIR, 'Finance.MCC.Codes.tsv'))
+  for (const item of data) {
+    const name = item.name || item.id || ''
+    if (!name) continue
+
+    const id = toPascalCase(name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    categories.push({
+      ns: NAMESPACES.merchantCategories,
+      type: 'MerchantCategory',
+      id,
+      name,
+      description: item.description || name,
+      code: item.code,
+      shortName: item.code || toShortName(name),
+      sourceType: 'Finance',
+      mccCode: item.code,
+    })
+  }
+
+  console.log(`  📊 Generated ${categories.length} merchant categories`)
+  return categories
+}
+
+
+// ============================================================================
 // Geography Domain Generation
 // ============================================================================
 
@@ -1169,13 +1645,19 @@ async function main(): Promise<void> {
   console.log('─'.repeat(50))
 
   const roles = await generateRoles(parser)
+  const jobs = generateJobs()
   const competencies = generateCompetencies()
+  const activities = generateActivities()
+  const contexts = generateContexts()
   const tasks = await generateTasks(parser)
   const { actions, events, taskActionRels, actionEventRels } =
     await generateActionsAndEvents(tasks, parser)
 
   writeTSV(path.join(OUTPUT_DIR, 'Roles.tsv'), roles.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Jobs.tsv'), jobs.map(entityToRecord))
   writeTSV(path.join(OUTPUT_DIR, 'Competencies.tsv'), competencies.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Activities.tsv'), activities.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Contexts.tsv'), contexts.map(entityToRecord))
   writeTSV(path.join(OUTPUT_DIR, 'Tasks.tsv'), tasks.map(entityToRecord))
   writeTSV(path.join(OUTPUT_DIR, 'Actions.tsv'), actions.map(entityToRecord))
   writeTSV(path.join(OUTPUT_DIR, 'Events.tsv'), events.map(entityToRecord))
@@ -1197,6 +1679,52 @@ async function main(): Promise<void> {
   writeTSV(path.join(OUTPUT_DIR, 'Products.tsv'), products.map(entityToRecord))
   writeTSV(path.join(OUTPUT_DIR, 'Services.tsv'), services.map(entityToRecord))
 
+  // ========== Technology Domain ==========
+  console.log('\n📊 Technology Domain')
+  console.log('─'.repeat(50))
+
+  const tech = generateTech()
+  const tools = generateTools()
+
+  writeTSV(path.join(OUTPUT_DIR, 'Tech.tsv'), tech.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Tools.tsv'), tools.map(entityToRecord))
+
+  // ========== Supply Chain Domain (GS1) ==========
+  console.log('\n📊 Supply Chain Domain (GS1)')
+  console.log('─'.repeat(50))
+
+  const businessSteps = generateBusinessSteps()
+  const dispositions = generateDispositions()
+  const identifierTypes = generateIdentifierTypes()
+  const locationTypes = generateLocationTypes()
+  const productAttributes = generateProductAttributes()
+
+  writeTSV(path.join(OUTPUT_DIR, 'BusinessSteps.tsv'), businessSteps.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Dispositions.tsv'), dispositions.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'IdentifierTypes.tsv'), identifierTypes.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'LocationTypes.tsv'), locationTypes.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'ProductAttributes.tsv'), productAttributes.map(entityToRecord))
+
+  // ========== Work Preferences Domain (ONET) ==========
+  console.log('\n📊 Work Preferences Domain (ONET)')
+  console.log('─'.repeat(50))
+
+  const workStyles = generateWorkStyles()
+  const workValues = generateWorkValues()
+  const interests = generateInterests()
+
+  writeTSV(path.join(OUTPUT_DIR, 'WorkStyles.tsv'), workStyles.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'WorkValues.tsv'), workValues.map(entityToRecord))
+  writeTSV(path.join(OUTPUT_DIR, 'Interests.tsv'), interests.map(entityToRecord))
+
+  // ========== Financial Classifications Domain ==========
+  console.log('\n📊 Financial Classifications Domain')
+  console.log('─'.repeat(50))
+
+  const merchantCategories = generateMerchantCategories()
+
+  writeTSV(path.join(OUTPUT_DIR, 'MerchantCategories.tsv'), merchantCategories.map(entityToRecord))
+
   // ========== Geography Domain ==========
   console.log('\n📊 Geography Domain')
   console.log('─'.repeat(50))
@@ -1207,16 +1735,30 @@ async function main(): Promise<void> {
   // ========== Summary ==========
   console.log('\n📈 Summary')
   console.log('─'.repeat(50))
-  console.log(`  Roles:        ${roles.length}`)
-  console.log(`  Competencies: ${competencies.length}`)
-  console.log(`  Tasks:        ${tasks.length}`)
-  console.log(`  Actions:      ${actions.length}`)
-  console.log(`  Events:       ${events.length}`)
-  console.log(`  Industries:   ${industries.length}`)
-  console.log(`  Processes:    ${processes.length}`)
-  console.log(`  Products:     ${products.length}`)
-  console.log(`  Services:     ${services.length}`)
-  console.log(`  Locations:    ${locations.length}`)
+  console.log(`  Roles:              ${roles.length}`)
+  console.log(`  Jobs:               ${jobs.length}`)
+  console.log(`  Competencies:       ${competencies.length}`)
+  console.log(`  Activities:         ${activities.length}`)
+  console.log(`  Contexts:           ${contexts.length}`)
+  console.log(`  Tasks:              ${tasks.length}`)
+  console.log(`  Actions:            ${actions.length}`)
+  console.log(`  Events:             ${events.length}`)
+  console.log(`  WorkStyles:         ${workStyles.length}`)
+  console.log(`  WorkValues:         ${workValues.length}`)
+  console.log(`  Interests:          ${interests.length}`)
+  console.log(`  Industries:         ${industries.length} (NAICS + SIC)`)
+  console.log(`  Processes:          ${processes.length}`)
+  console.log(`  Products:           ${products.length}`)
+  console.log(`  ProductAttributes:  ${productAttributes.length}`)
+  console.log(`  Services:           ${services.length}`)
+  console.log(`  Tech:               ${tech.length}`)
+  console.log(`  Tools:              ${tools.length}`)
+  console.log(`  BusinessSteps:      ${businessSteps.length}`)
+  console.log(`  Dispositions:       ${dispositions.length}`)
+  console.log(`  IdentifierTypes:    ${identifierTypes.length}`)
+  console.log(`  LocationTypes:      ${locationTypes.length}`)
+  console.log(`  MerchantCategories: ${merchantCategories.length}`)
+  console.log(`  Locations:          ${locations.length}`)
 
   console.log('\n✨ Interface generation complete!')
 }

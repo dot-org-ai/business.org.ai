@@ -57,6 +57,16 @@ export interface AbstractRole extends Entity {
   seniorityLevel?: string
   jobFunction?: string
   department?: string
+  jobZone?: string // 1-5 preparation level (from O*NET Job Zones)
+}
+
+/**
+ * Abstract Job - specific job titles derived from alternate titles
+ */
+export interface AbstractJob extends Entity {
+  type: 'Job'
+  sourceType: string // "ONETAlternateTitle", "ReportedTitle"
+  occupationCode?: string // Link to parent occupation (SOC code)
 }
 
 /**
@@ -115,6 +125,24 @@ export interface AbstractEvent extends Entity {
   source?: string // Original source text for debugging
   // Links to actions
   sourceActionId?: string
+}
+
+/**
+ * Abstract Activity - hierarchical work activities (WorkActivity → IWA → DWA)
+ */
+export interface AbstractActivity extends HierarchicalEntity {
+  type: 'Activity'
+  category: 'WorkActivity' | 'IWA' | 'DWA' // IWA = Intermediate, DWA = Detailed
+  sourceType: string
+}
+
+/**
+ * Abstract Context - work contexts and environments
+ */
+export interface AbstractContext extends Entity {
+  type: 'Context'
+  category?: string // Physical, Social, Structural
+  sourceType: string
 }
 
 // ============================================================================
@@ -230,6 +258,135 @@ export interface AbstractMetric extends Entity {
 }
 
 // ============================================================================
+// Abstract Interfaces - Technology & Equipment
+// ============================================================================
+
+/**
+ * Abstract Technology - software, systems, platforms
+ */
+export interface AbstractTech extends Entity {
+  type: 'Tech'
+  category?: string // Software category from UNSPSC
+  sourceType: string
+  unspscCode?: string // UNSPSC commodity code
+}
+
+/**
+ * Abstract Tool - physical tools and equipment
+ */
+export interface AbstractTool extends Entity {
+  type: 'Tool'
+  category?: string // Equipment category from UNSPSC
+  sourceType: string
+  unspscCode?: string // UNSPSC commodity code
+}
+
+// ============================================================================
+// Abstract Interfaces - Supply Chain & Operations (GS1)
+// ============================================================================
+
+/**
+ * Abstract BusinessStep - standardized supply chain steps (GS1 EPCIS)
+ */
+export interface AbstractBusinessStep extends Entity {
+  type: 'BusinessStep'
+  sourceType: string
+  verb?: string // The action verb (e.g., "accept", "arrive", "ship")
+}
+
+/**
+ * Abstract Disposition - entity state/status types (GS1 EPCIS)
+ */
+export interface AbstractDisposition extends Entity {
+  type: 'Disposition'
+  sourceType: string
+  category?: string // Active, Inactive, Terminal, etc.
+}
+
+/**
+ * Abstract IdentifierType - standard identifier types (GTIN, GLN, etc.)
+ */
+export interface AbstractIdentifierType extends Entity {
+  type: 'IdentifierType'
+  sourceType: string
+  structure?: string // Format/structure of the identifier
+}
+
+/**
+ * Abstract LocationType - organizational location types (GS1)
+ */
+export interface AbstractLocationType extends Entity {
+  type: 'LocationType'
+  sourceType: string
+  category?: string // Physical, Functional, Organizational
+}
+
+/**
+ * Abstract ProductAttribute - product characteristics (GS1)
+ */
+export interface AbstractProductAttribute extends Entity {
+  type: 'ProductAttribute'
+  sourceType: string
+  dataType?: string // String, Number, Boolean, etc.
+  unit?: string
+}
+
+// ============================================================================
+// Abstract Interfaces - Work Preferences (ONET)
+// ============================================================================
+
+/**
+ * Abstract WorkStyle - work style preferences
+ */
+export interface AbstractWorkStyle extends Entity {
+  type: 'WorkStyle'
+  sourceType: string
+  category?: string // Achievement, Social, Practical, etc.
+}
+
+/**
+ * Abstract WorkValue - job values and priorities
+ */
+export interface AbstractWorkValue extends Entity {
+  type: 'WorkValue'
+  sourceType: string
+  category?: string // Intrinsic, Extrinsic, etc.
+}
+
+/**
+ * Abstract Interest - career interests (RIASEC model)
+ */
+export interface AbstractInterest extends Entity {
+  type: 'Interest'
+  sourceType: string
+  riasecCode?: string // R, I, A, S, E, C
+}
+
+// ============================================================================
+// Abstract Interfaces - Financial Classifications
+// ============================================================================
+
+/**
+ * Abstract MerchantCategory - merchant category codes (MCC)
+ */
+export interface AbstractMerchantCategory extends Entity {
+  type: 'MerchantCategory'
+  sourceType: string
+  mccCode?: string
+  categoryGroup?: string
+}
+
+/**
+ * Abstract SICIndustry - SIC industry codes (SEC)
+ */
+export interface AbstractSICIndustry extends HierarchicalEntity {
+  type: 'SICIndustry'
+  sourceType: string
+  division?: string
+  majorGroup?: string
+}
+
+// ============================================================================
 // Unified Domain Types
 // ============================================================================
 
@@ -309,6 +466,7 @@ export function isRelationship(obj: unknown): obj is Relationship {
 export const NAMESPACES = {
   // Work Domain
   roles: 'roles.org.ai',
+  jobs: 'jobs.org.ai',
   occupations: 'occupations.org.ai',
   competencies: 'competencies.org.ai',
   skills: 'skills.org.ai',
@@ -316,6 +474,10 @@ export const NAMESPACES = {
   actions: 'actions.org.ai',
   events: 'events.org.ai',
   activities: 'activities.org.ai',
+  contexts: 'context.org.ai',
+  workStyles: 'workstyles.org.ai',
+  workValues: 'workvalues.org.ai',
+  interests: 'interests.org.ai',
 
   // Business Domain
   industries: 'industries.org.ai',
@@ -323,6 +485,19 @@ export const NAMESPACES = {
   products: 'products.org.ai',
   services: 'services.org.ai',
   metrics: 'metrics.org.ai',
+  merchantCategories: 'mcc.org.ai',
+  sicIndustries: 'sic.org.ai',
+
+  // Supply Chain Domain (GS1)
+  businessSteps: 'steps.org.ai',
+  dispositions: 'status.org.ai',
+  identifierTypes: 'identifiers.org.ai',
+  locationTypes: 'locationtypes.org.ai',
+  productAttributes: 'attributes.org.ai',
+
+  // Technology Domain
+  tech: 'tech.org.ai',
+  tools: 'tools.org.ai',
 
   // Geography Domain
   locations: 'locations.org.ai',
@@ -342,6 +517,8 @@ export const NAMESPACES = {
   iso: 'iso.org.ai',
   un: 'un.org.ai',
   w3c: 'w3c.org.ai',
+  finance: 'finance.org.ai',
+  sec: 'sec.org.ai',
 
   // Meta
   standards: 'standards.org.ai',
